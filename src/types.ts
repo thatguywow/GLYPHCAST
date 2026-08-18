@@ -38,6 +38,14 @@ export interface RenderParams {
    * 0 disables it.
    */
   hysteresis: number;
+  /**
+   * ASCII colour detail, 0..1. At 0 each cell is flat: one foreground and one
+   * background colour (classic terminal look). At 1 the glyph's ink and paper are
+   * tinted by the source colour sampled per output pixel, so colour keeps full
+   * resolution while the glyph keeps the shape. Text-ness is preserved either way
+   * — only the colour resolution changes.
+   */
+  colorDetail: number;
   /** Output brightness multiplier applied before gamma. */
   gain: number;
   /** Output gamma. >1 lifts midtones. */
@@ -53,6 +61,7 @@ export const DEFAULT_PARAMS: RenderParams = {
   mode: Mode.AsciiColor,
   matchGlyphs: true,
   hysteresis: 0.18,
+  colorDetail: 0.75,
   gain: 1.0,
   gamma: 1.0,
   tint: [0.65, 1.0, 0.72],

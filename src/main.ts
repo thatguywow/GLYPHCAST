@@ -163,6 +163,13 @@ async function main() {
     applyParams();
   };
 
+  const detail = $('detail') as HTMLInputElement;
+  detail.oninput = () => {
+    params.colorDetail = +detail.value;
+    $('detailVal').textContent = (+detail.value).toFixed(2);
+    applyParams();
+  };
+
   const hyst = $('hyst') as HTMLInputElement;
   hyst.oninput = () => {
     params.hysteresis = +hyst.value;

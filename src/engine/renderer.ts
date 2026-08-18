@@ -159,6 +159,7 @@ export class Renderer {
     dv.setFloat32(24, this.params.tint[0], true);
     dv.setFloat32(28, this.params.tint[1], true);
     dv.setFloat32(32, this.params.tint[2], true);
+    dv.setFloat32(36, this.params.colorDetail, true);
     dev.queue.writeBuffer(this.rUniform, 0, buf);
 
     // Two bind-group sets: set i writes glyph texture i and reads texture 1-i.

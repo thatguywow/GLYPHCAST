@@ -26,8 +26,10 @@ const base = (p: Partial<RenderParams>): RenderParams => ({
 });
 
 const CONFIGS: { label: string; params: RenderParams }[] = [
-  { label: 'ASCII color RAMP', params: base({ mode: Mode.AsciiColor, matchGlyphs: false }) },
-  { label: 'ASCII color MATCH', params: base({ mode: Mode.AsciiColor, matchGlyphs: true }) },
+  { label: 'ASCII RAMP flat', params: base({ mode: Mode.AsciiColor, matchGlyphs: false, colorDetail: 0 }) },
+  { label: 'ASCII MATCH flat', params: base({ mode: Mode.AsciiColor, matchGlyphs: true, colorDetail: 0 }) },
+  { label: 'ASCII MATCH detail .75', params: base({ mode: Mode.AsciiColor, matchGlyphs: true, colorDetail: 0.75 }) },
+  { label: 'ASCII MATCH detail 1', params: base({ mode: Mode.AsciiColor, matchGlyphs: true, colorDetail: 1 }) },
   { label: 'ASCII mono MATCH', params: base({ mode: Mode.AsciiMono, matchGlyphs: true }) },
   { label: 'Half-block 1x2', params: base({ mode: Mode.HalfBlock }) },
   { label: 'Quarter-block 2x2', params: base({ mode: Mode.QuarterBlock }) },

@@ -12,7 +12,7 @@ struct RU {
   tintR: f32,
   tintG: f32,
   tintB: f32,
-  _p0: f32,
+  colorDetail: f32,
   _p1: f32,
   _p2: f32,
 };
@@ -72,6 +72,7 @@ fn fs(in: VSOut) -> @location(0) vec4f {
 
     var fg = textureLoad(fgTex, cc, 0).rgb;
     var bg = textureLoad(bgTex, cc, 0).rgb;
+
     if (u.mode == 0u) {
       // Mono: keep the tonal split, drop the hue.
       let tint = vec3f(u.tintR, u.tintG, u.tintB);
@@ -79,6 +80,18 @@ fn fs(in: VSOut) -> @location(0) vec4f {
       bg = tint * lum(bg);
     }
     outRGB = mix(bg, fg, cov);
+
+    // Per-sub-cell colour (colour modes only). The cell's ink/paper split already
+    // reconstructs the correct LUMINANCE, so detail must not rescale it — that
+    // would darken every glyph by its own coverage. Instead take the source hue at
+    // this pixel and renormalise it to the luminance the glyph already establishes:
+    // full-resolution colour, unchanged tone.
+    if (u.colorDetail > 0.0 && u.mode == 1u) {
+      let srcC = textureSampleLevel(videoTex, videoSamp, in.uv, 0.0).rgb;
+      let lb = lum(outRGB);
+      let ls = max(lum(srcC), 1e-3);
+      outRGB = mix(outRGB, srcC * (lb / ls), u.colorDetail);
+    }
   }
 
   outRGB = pow(clamp(outRGB * u.gain, vec3f(0.0), vec3f(1.0)), vec3f(1.0 / max(u.gamma, 0.01)));
