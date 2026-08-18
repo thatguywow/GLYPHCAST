@@ -3,20 +3,27 @@ import { Decoder } from '../decode/decoder';
 import type { Renderer } from '../engine/renderer';
 import type { VideoConfig } from '../types';
 
-/** How many decoded frames + in-flight decodes to keep buffered ahead of playback. */
-const TARGET_BUFFER = 10;
+/** Decoded frames + in-flight decodes kept buffered ahead of playback. */
+const TARGET_BUFFER = 12;
 
 export interface PlayerStats {
   fps: number;
+  /** 95th-percentile frame time in ms — the number that exposes judder. */
+  p95: number;
+  worst: number;
   buffered: number;
+  dropped: number;
   currentTime: number;
   duration: number;
 }
 
 /**
- * Orchestrates: demux -> WebCodecs decode -> frame queue -> present against the
- * audio master clock -> Renderer. The <audio> element owns the clock so A/V
- * stays locked even if rendering can't keep the video's native frame rate.
+ * Demux -> WebCodecs decode -> frame queue -> present against the audio clock.
+ *
+ * `audio.currentTime` only updates a few times per second, so using it raw makes
+ * frames bunch up and judder. We interpolate it with performance.now() between
+ * updates and resync whenever the element reports a new value, which keeps
+ * presentation smooth while staying locked to audio over time.
  */
 export class Player {
   private audio = new Audio();
@@ -29,8 +36,16 @@ export class Player {
   private running = false;
   private objectUrl: string | null = null;
 
-  private lastStatAt = performance.now();
+  // Interpolated clock state.
+  private lastAudioTime = -1;
+  private lastAudioAt = 0;
+
+  // Frame-time instrumentation.
+  private times: number[] = [];
+  private lastFrameAt = 0;
+  private lastStatAt = 0;
   private frameCount = 0;
+  private dropped = 0;
 
   onStats?: (s: PlayerStats) => void;
   onError?: (msg: string) => void;
@@ -46,7 +61,7 @@ export class Player {
     this.audio.load();
 
     this.decoder = new Decoder(
-      (f) => this.onFrame(f),
+      (f) => this.frames.push(f),
       (e) => this.onError?.(`Decoder: ${e}`),
     );
 
@@ -67,12 +82,6 @@ export class Player {
     );
   }
 
-  private onFrame(f: VideoFrame) {
-    // Decoder emits in presentation order, but keep it sorted defensively.
-    this.frames.push(f);
-    this.frames.sort((a, b) => a.timestamp - b.timestamp);
-  }
-
   private pump() {
     if (!this.decoder) return;
     while (
@@ -83,14 +92,28 @@ export class Player {
     }
   }
 
+  /** Audio position in microseconds, interpolated between element updates. */
+  private clock(now: number): number {
+    const t = this.audio.currentTime;
+    if (t !== this.lastAudioTime) {
+      this.lastAudioTime = t;
+      this.lastAudioAt = now;
+      return t * 1e6;
+    }
+    return (t + (now - this.lastAudioAt) / 1000) * 1e6;
+  }
+
   play() {
     if (this.running || !this.cfg) return;
     this.running = true;
-    void this.audio.play().catch(() => {
-      /* Called from a user gesture, so autoplay policy is satisfied. */
-    });
-    this.lastStatAt = performance.now();
+    void this.audio.play().catch(() => {});
+    const now = performance.now();
+    this.lastStatAt = now;
+    this.lastFrameAt = now;
+    this.lastAudioTime = -1;
     this.frameCount = 0;
+    this.dropped = 0;
+    this.times = [];
     this.raf = requestAnimationFrame(this.loop);
   }
 
@@ -109,7 +132,6 @@ export class Player {
     return this.running;
   }
 
-  /** Re-render the current frame without advancing (for live param edits). */
   rerender() {
     this.renderer.render();
   }
@@ -118,9 +140,10 @@ export class Player {
     if (!this.running) return;
     this.pump();
 
-    const t = this.audio.currentTime * 1e6;
+    const now = performance.now();
+    const t = this.clock(now);
 
-    // Present the newest frame whose timestamp has been reached.
+    // Frames arrive in presentation order; walk forward to the newest due frame.
     let idx = -1;
     for (let i = 0; i < this.frames.length; i++) {
       if (this.frames[i].timestamp <= t) idx = i;
@@ -129,20 +152,33 @@ export class Player {
 
     if (idx >= 0) {
       this.renderer.render(this.frames[idx]);
-      for (let i = 0; i <= idx; i++) this.frames[i].close();
+      // Everything before the presented frame is late — count and release it.
+      for (let i = 0; i < idx; i++) {
+        this.frames[i].close();
+        this.dropped++;
+      }
+      this.frames[idx].close();
       this.frames.splice(0, idx + 1);
+
       this.frameCount++;
+      this.times.push(now - this.lastFrameAt);
+      this.lastFrameAt = now;
     }
 
-    const now = performance.now();
     if (now - this.lastStatAt >= 500) {
+      const sorted = [...this.times].sort((a, b) => a - b);
+      const p95 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] : 0;
       this.onStats?.({
         fps: (this.frameCount * 1000) / (now - this.lastStatAt),
+        p95: +p95.toFixed(1),
+        worst: +(sorted[sorted.length - 1] ?? 0).toFixed(1),
         buffered: this.frames.length,
+        dropped: this.dropped,
         currentTime: this.audio.currentTime,
         duration: this.audio.duration || 0,
       });
       this.frameCount = 0;
+      this.times = [];
       this.lastStatAt = now;
     }
 

@@ -57,7 +57,10 @@ async function main() {
   };
   player.onStats = (s) => {
     const dur = s.duration ? ` / ${s.duration.toFixed(0)}s` : '';
-    statsEl.textContent = `${s.fps.toFixed(0)} fps · buf ${s.buffered} · ${s.currentTime.toFixed(1)}s${dur}`;
+    const [ow, oh] = renderer.outputSize;
+    statsEl.textContent =
+      `${s.fps.toFixed(0)} fps · p95 ${s.p95}ms · drop ${s.dropped} · buf ${s.buffered} · ` +
+      `${ow}×${oh} · ${s.currentTime.toFixed(1)}s${dur}`;
   };
 
   demo.onFrame = (cv, w, h) => renderer.render(cv, w, h);
@@ -160,16 +163,9 @@ async function main() {
     applyParams();
   };
 
-  const edge = $('edge') as HTMLInputElement;
-  edge.onchange = () => {
-    params.edgeEnable = edge.checked;
-    applyParams();
-  };
-
-  const edgeThresh = $('edgeThresh') as HTMLInputElement;
-  edgeThresh.oninput = () => {
-    params.edgeThreshold = +edgeThresh.value;
-    $('edgeVal').textContent = (+edgeThresh.value).toFixed(2);
+  const match = $('match') as HTMLInputElement;
+  match.onchange = () => {
+    params.matchGlyphs = match.checked;
     applyParams();
   };
 }

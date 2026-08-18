@@ -1,12 +1,11 @@
-// Headless quality harness. Renders every mode across every test pattern into an
-// offscreen texture, reads the pixels back, and computes objective metrics vs a
-// reference (the source resampled to the same output resolution). No display or
-// requestAnimationFrame required — runs fully from `run()` on load.
+// Headless quality + performance harness. Renders every config across every test
+// pattern offscreen, reads the pixels back, and scores them against a reference.
+// No display or requestAnimationFrame needed.
 //
-// After load:
 //   window.__BENCH_DONE__  -> true when finished
-//   window.__BENCH__       -> array of { pattern, config, metrics }
-//   window.gc.capturePNG(pattern, configIndex) -> Promise<dataURL>  (for eyeballing)
+//   window.__BENCH__       -> [{ pattern, config, metrics }]
+//   window.__PERF__        -> [{ config, cols, msPerFrame, fps }]
+//   window.gc.capture(pattern, configIndex) -> Promise<jpeg data URL>
 
 import { initGPU } from '../engine/gpu';
 import { buildGlyphAtlas } from '../engine/glyphAtlas';
@@ -15,7 +14,6 @@ import { DEFAULT_PARAMS, Mode, type RenderParams } from '../types';
 import { computeMetrics, type Metrics } from './metrics';
 import { ALL_PATTERNS, makePattern, type PatternName } from './patterns';
 
-// Fixed grid across the sweep so output size (and thus the reference) is constant.
 const COLS = 200;
 const CELL = 6;
 
@@ -27,9 +25,9 @@ const base = (p: Partial<RenderParams>): RenderParams => ({
 });
 
 const CONFIGS: { label: string; params: RenderParams }[] = [
-  { label: 'ASCII mono +edge', params: base({ mode: Mode.AsciiMono, edgeEnable: true }) },
-  { label: 'ASCII color +edge', params: base({ mode: Mode.AsciiColor, edgeEnable: true }) },
-  { label: 'ASCII color -edge', params: base({ mode: Mode.AsciiColor, edgeEnable: false }) },
+  { label: 'ASCII color RAMP', params: base({ mode: Mode.AsciiColor, matchGlyphs: false }) },
+  { label: 'ASCII color MATCH', params: base({ mode: Mode.AsciiColor, matchGlyphs: true }) },
+  { label: 'ASCII mono MATCH', params: base({ mode: Mode.AsciiMono, matchGlyphs: true }) },
   { label: 'Half-block', params: base({ mode: Mode.HalfBlock }) },
   { label: 'Quarter-block', params: base({ mode: Mode.QuarterBlock }) },
   { label: 'Full-block', params: base({ mode: Mode.FullBlock }) },
@@ -42,11 +40,8 @@ interface Row {
 }
 
 let renderer!: Renderer;
-const patternCache: Partial<Record<PatternName, HTMLCanvasElement>> = {};
-
-function pattern(name: PatternName): HTMLCanvasElement {
-  return (patternCache[name] ??= makePattern(name));
-}
+const cache: Partial<Record<PatternName, HTMLCanvasElement>> = {};
+const pattern = (n: PatternName) => (cache[n] ??= makePattern(n));
 
 function referenceRGBA(src: HTMLCanvasElement, w: number, h: number): Uint8ClampedArray {
   const cv = document.createElement('canvas');
@@ -55,6 +50,31 @@ function referenceRGBA(src: HTMLCanvasElement, w: number, h: number): Uint8Clamp
   const ctx = cv.getContext('2d')!;
   ctx.drawImage(src, 0, 0, w, h);
   return ctx.getImageData(0, 0, w, h).data;
+}
+
+/**
+ * True GPU throughput: submits the real render path repeatedly and waits for the
+ * queue to drain. Excludes readback (which is a harness cost, not a playback one).
+ */
+async function perf(label: string, params: RenderParams, iterations = 60) {
+  renderer.setParams(params);
+  const pat = pattern('scene');
+  renderer.renderOffscreen(pat, pat.width, pat.height);
+  await renderer.deviceIdle();
+
+  const t0 = performance.now();
+  for (let i = 0; i < iterations; i++) renderer.renderOffscreen(pat, pat.width, pat.height);
+  await renderer.deviceIdle();
+  const ms = (performance.now() - t0) / iterations;
+
+  const [w, h] = renderer.outputSize;
+  return {
+    config: label,
+    cols: params.cols,
+    out: `${w}x${h}`,
+    msPerFrame: +ms.toFixed(3),
+    fps: +(1000 / ms).toFixed(0),
+  };
 }
 
 async function run() {
@@ -73,9 +93,18 @@ async function run() {
       rows.push({ pattern: name, config: c.label, metrics: computeMetrics(ref, out.rgba, out.width, out.height) });
     }
   }
-
   paint(rows);
   (window as any).__BENCH__ = rows;
+
+  // Throughput: matching cost at increasing grid density.
+  const perfRows = [];
+  perfRows.push(await perf('MATCH 200c', base({ mode: Mode.AsciiColor, matchGlyphs: true })));
+  perfRows.push(await perf('MATCH 320c', base({ mode: Mode.AsciiColor, matchGlyphs: true, cols: 320 })));
+  perfRows.push(await perf('RAMP 320c', base({ mode: Mode.AsciiColor, matchGlyphs: false, cols: 320 })));
+  perfRows.push(await perf('Quarter 320c', base({ mode: Mode.QuarterBlock, cols: 320 })));
+  (window as any).__PERF__ = perfRows;
+  document.getElementById('perf')!.textContent = JSON.stringify(perfRows, null, 1);
+
   (window as any).__BENCH_DONE__ = true;
 }
 
@@ -85,21 +114,17 @@ function paint(rows: Row[]) {
   for (const r of rows) {
     const m = r.metrics;
     html +=
-      `<tr><td>${r.pattern}</td><td>${r.config}</td>` +
-      `<td>${m.psnr}</td><td>${m.ssim}</td><td>${m.edgePreservation}</td>` +
-      `<td>${m.lumaMeanRef}→${m.lumaMeanOut}</td>` +
+      `<tr><td>${r.pattern}</td><td>${r.config}</td><td>${m.psnr}</td><td>${m.ssim}</td>` +
+      `<td>${m.edgePreservation}</td><td>${m.lumaMeanRef}→${m.lumaMeanOut}</td>` +
       `<td>${m.lumaContrastRef}→${m.lumaContrastOut}</td></tr>`;
   }
-  html += '</tbody></table>';
-  document.getElementById('out')!.innerHTML = html;
-  document.getElementById('json')!.textContent = JSON.stringify(rows);
+  document.getElementById('out')!.innerHTML = html + '</tbody></table>';
 }
 
 (window as any).gc = {
   configs: CONFIGS.map((c) => c.label),
   patterns: ALL_PATTERNS,
-  /** Returns a downscaled JPEG data URL of one render, small enough to shuttle out for inspection. */
-  async capturePNG(name: PatternName, configIndex: number, maxW = 640): Promise<string> {
+  async capture(name: PatternName, configIndex: number, maxW = 600): Promise<string> {
     renderer.setParams(CONFIGS[configIndex].params);
     const pat = pattern(name);
     const { width, height, rgba } = await renderer.readback(pat, pat.width, pat.height);
@@ -111,13 +136,11 @@ function paint(rows: Row[]) {
     img.data.set(rgba);
     fctx.putImageData(img, 0, 0);
     const scale = Math.min(1, maxW / width);
-    const ow = Math.round(width * scale);
-    const oh = Math.round(height * scale);
     const small = document.createElement('canvas');
-    small.width = ow;
-    small.height = oh;
-    small.getContext('2d')!.drawImage(full, 0, 0, ow, oh);
-    return small.toDataURL('image/jpeg', 0.85);
+    small.width = Math.round(width * scale);
+    small.height = Math.round(height * scale);
+    small.getContext('2d')!.drawImage(full, 0, 0, small.width, small.height);
+    return small.toDataURL('image/jpeg', 0.82);
   },
 };
 
