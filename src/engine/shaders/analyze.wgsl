@@ -14,7 +14,11 @@ struct AU {
   glyphCount: u32,
   matchGlyphs: u32,
   rampLen: u32,
-  _pad: u32,
+  useHysteresis: u32,
+  hysteresis: f32,
+  _p0: f32,
+  _p1: f32,
+  _p2: f32,
 };
 
 @group(0) @binding(0) var videoTex: texture_2d<f32>;
@@ -24,6 +28,7 @@ struct AU {
 @group(0) @binding(4) var<uniform> u: AU;
 @group(0) @binding(5) var<storage, read> sig: array<vec4f>;   // SIGH vec4 rows per glyph
 @group(0) @binding(6) var<storage, read> ramp: array<u32>;
+@group(0) @binding(7) var prevGlyphTex: texture_2d<u32>;
 
 const SIGW: u32 = 4u;
 const SIGH: u32 = 8u;
@@ -117,9 +122,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (nf == 0.0) { fg = bg; }
   if (nb == 0.0) { bg = fg; }
 
+  let p = vec2i(gid.xy);
   var best: u32 = 0u;
 
   if (u.matchGlyphs == 1u) {
+    // Temporal hysteresis: a cell whose content barely changed can still flip to a
+    // different glyph when two candidates score nearly equal, which reads as
+    // shimmer in motion. Track the previous frame's glyph error in the same loop
+    // (free) and keep it unless a challenger is clearly better.
+    let prev = textureLoad(prevGlyphTex, p, 0).r;
+    var errPrev = 1e9;
+
     var bestErr = 1e9;
     for (var g: u32 = 0u; g < u.glyphCount; g++) {
       var err = 0.0;
@@ -132,10 +145,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let d3 = row.w - (sLum[b + 3u] - lo) / range;
         err += d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3;
       }
+      if (g == prev) {
+        errPrev = err;
+      }
       if (err < bestErr) {
         bestErr = err;
         best = g;
       }
+    }
+
+    if (u.useHysteresis == 1u && prev < u.glyphCount && errPrev <= bestErr * (1.0 + u.hysteresis)) {
+      best = prev;
     }
   } else {
     var mean = 0.0;
@@ -145,7 +165,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     best = ramp[idx];
   }
 
-  let p = vec2i(gid.xy);
   textureStore(fgTex, p, vec4f(fg, 1.0));
   textureStore(bgTex, p, vec4f(bg, 1.0));
   textureStore(glyphTex, p, vec4u(best, 0u, 0u, 1u));

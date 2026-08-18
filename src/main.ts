@@ -163,6 +163,13 @@ async function main() {
     applyParams();
   };
 
+  const hyst = $('hyst') as HTMLInputElement;
+  hyst.oninput = () => {
+    params.hysteresis = +hyst.value;
+    $('hystVal').textContent = (+hyst.value).toFixed(2);
+    applyParams();
+  };
+
   const match = $('match') as HTMLInputElement;
   match.onchange = () => {
     params.matchGlyphs = match.checked;

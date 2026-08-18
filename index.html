@@ -148,9 +148,12 @@
         <select id="mode">
           <option value="1">ASCII — color</option>
           <option value="0">ASCII — mono</option>
-          <option value="2">Half-block (near-native)</option>
-          <option value="3">Quarter-block (max detail)</option>
-          <option value="4">Full-block (mosaic)</option>
+          <option value="4">Full-block (mosaic, 1x1)</option>
+          <option value="2">Half-block (1x2)</option>
+          <option value="3">Quarter-block (2x2)</option>
+          <option value="5">Sextant (2x3)</option>
+          <option value="6">Octant (2x4)</option>
+          <option value="7">Hex (4x4 — max quality, heaviest)</option>
         </select>
       </div>
 
@@ -167,6 +170,12 @@
       <div class="group">
         <label><input type="checkbox" id="match" checked /> Glyph shape matching (max quality)</label>
         <div class="hint">Picks each glyph by shape, not brightness. Off = fast ramp.</div>
+      </div>
+
+      <div class="group">
+        <label>Temporal stability <span class="val" id="hystVal">0.18</span></label>
+        <input id="hyst" type="range" min="0" max="0.6" step="0.02" value="0.18" />
+        <div class="hint">Keeps last frame's glyph when scores are close. Kills shimmer in motion. 0 = off.</div>
       </div>
 
       <div class="err" id="err"></div>

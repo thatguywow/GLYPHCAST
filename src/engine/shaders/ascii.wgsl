@@ -56,9 +56,12 @@ fn fs(in: VSOut) -> @location(0) vec4f {
 
   if (u.mode >= 2u) {
     // Block modes: real colour at sub-cell resolution.
-    var sub = vec2f(1.0, 2.0);                    // 2 = half block (1x2)
-    if (u.mode == 3u) { sub = vec2f(2.0, 2.0); }  // 3 = quarter block (2x2)
-    if (u.mode == 4u) { sub = vec2f(1.0, 1.0); }  // 4 = full block (mosaic)
+    var sub = vec2f(1.0, 2.0);                    // 2 = half    (1x2)
+    if (u.mode == 3u) { sub = vec2f(2.0, 2.0); }  // 3 = quarter (2x2)
+    if (u.mode == 4u) { sub = vec2f(1.0, 1.0); }  // 4 = full    (1x1 mosaic)
+    if (u.mode == 5u) { sub = vec2f(2.0, 3.0); }  // 5 = sextant (2x3)
+    if (u.mode == 6u) { sub = vec2f(2.0, 4.0); }  // 6 = octant  (2x4)
+    if (u.mode == 7u) { sub = vec2f(4.0, 4.0); }  // 7 = hex     (4x4, max detail)
     let si = floor(localUV * sub);
     let sampUV = (vec2f(cell) + (si + vec2f(0.5)) / sub) / gridF;
     outRGB = textureSampleLevel(videoTex, videoSamp, clamp(sampUV, vec2f(0.0), vec2f(1.0)), 0.0).rgb;

@@ -17,9 +17,12 @@ export class Renderer {
   private videoTex: GPUTexture | null = null;
   private fgTex: GPUTexture | null = null;
   private bgTex: GPUTexture | null = null;
-  private glyphTex: GPUTexture | null = null;
-  private computeBG: GPUBindGroup | null = null;
-  private renderBG: GPUBindGroup | null = null;
+  // Glyph choices ping-pong so each frame can read the previous frame's result
+  // (temporal hysteresis) while writing this frame's.
+  private glyphTex: (GPUTexture | null)[] = [null, null];
+  private computeBG: (GPUBindGroup | null)[] = [null, null];
+  private renderBG: (GPUBindGroup | null)[] = [null, null];
+  private pp = 0;
 
   // Reused readback resources (avoids per-capture allocation).
   private rbTexture: GPUTexture | null = null;
@@ -55,7 +58,7 @@ export class Renderer {
     });
 
     this.sampler = dev.createSampler({ magFilter: 'linear', minFilter: 'linear' });
-    this.aUniform = dev.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.aUniform = dev.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.rUniform = dev.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
     this.sigBuffer = dev.createBuffer({
@@ -118,27 +121,31 @@ export class Renderer {
 
     this.fgTex?.destroy();
     this.bgTex?.destroy();
-    this.glyphTex?.destroy();
+    this.glyphTex[0]?.destroy();
+    this.glyphTex[1]?.destroy();
     const cellUsage = GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING;
     this.fgTex = dev.createTexture({ label: 'cell-fg', size: [cols, rows, 1], format: 'rgba8unorm', usage: cellUsage });
     this.bgTex = dev.createTexture({ label: 'cell-bg', size: [cols, rows, 1], format: 'rgba8unorm', usage: cellUsage });
-    this.glyphTex = dev.createTexture({ label: 'cell-glyph', size: [cols, rows, 1], format: 'r32uint', usage: cellUsage });
-
-    // Analyse uniforms (8 x u32).
-    dev.queue.writeBuffer(
-      this.aUniform,
-      0,
-      new Uint32Array([
-        cols,
-        rows,
-        this.videoW,
-        this.videoH,
-        this.atlas.glyphCount,
-        this.params.matchGlyphs ? 1 : 0,
-        this.atlas.ramp.length,
-        0,
-      ]),
+    this.glyphTex = [0, 1].map((i) =>
+      dev.createTexture({ label: `cell-glyph-${i}`, size: [cols, rows, 1], format: 'r32uint', usage: cellUsage }),
     );
+    this.pp = 0;
+
+    // Analyse uniforms (48 bytes: 8 x u32 then hysteresis f32 + padding).
+    const ab = new ArrayBuffer(48);
+    const au = new Uint32Array(ab);
+    au.set([
+      cols,
+      rows,
+      this.videoW,
+      this.videoH,
+      this.atlas.glyphCount,
+      this.params.matchGlyphs ? 1 : 0,
+      this.atlas.ramp.length,
+      this.params.hysteresis > 0 ? 1 : 0,
+    ]);
+    new Float32Array(ab, 32, 1)[0] = this.params.hysteresis;
+    dev.queue.writeBuffer(this.aUniform, 0, ab);
 
     // Render uniforms (48 bytes, mixed u32/f32 — must match RU in ascii.wgsl).
     const buf = new ArrayBuffer(48);
@@ -154,35 +161,39 @@ export class Renderer {
     dv.setFloat32(32, this.params.tint[2], true);
     dev.queue.writeBuffer(this.rUniform, 0, buf);
 
-    this.computeBG = dev.createBindGroup({
-      layout: this.computePipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.videoTex.createView() },
-        { binding: 1, resource: this.fgTex.createView() },
-        { binding: 2, resource: this.bgTex.createView() },
-        { binding: 3, resource: this.glyphTex.createView() },
-        { binding: 4, resource: { buffer: this.aUniform } },
-        { binding: 5, resource: { buffer: this.sigBuffer } },
-        { binding: 6, resource: { buffer: this.rampBuffer } },
-      ],
-    });
-    this.renderBG = dev.createBindGroup({
-      layout: this.renderPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.fgTex.createView() },
-        { binding: 1, resource: this.bgTex.createView() },
-        { binding: 2, resource: this.glyphTex.createView() },
-        { binding: 3, resource: this.atlas.texture.createView() },
-        { binding: 4, resource: this.sampler },
-        { binding: 5, resource: { buffer: this.rUniform } },
-        { binding: 6, resource: this.videoTex.createView() },
-        { binding: 7, resource: this.sampler },
-      ],
-    });
+    // Two bind-group sets: set i writes glyph texture i and reads texture 1-i.
+    for (let i = 0; i < 2; i++) {
+      this.computeBG[i] = dev.createBindGroup({
+        layout: this.computePipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.videoTex.createView() },
+          { binding: 1, resource: this.fgTex.createView() },
+          { binding: 2, resource: this.bgTex.createView() },
+          { binding: 3, resource: this.glyphTex[i]!.createView() },
+          { binding: 4, resource: { buffer: this.aUniform } },
+          { binding: 5, resource: { buffer: this.sigBuffer } },
+          { binding: 6, resource: { buffer: this.rampBuffer } },
+          { binding: 7, resource: this.glyphTex[1 - i]!.createView() },
+        ],
+      });
+      this.renderBG[i] = dev.createBindGroup({
+        layout: this.renderPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.fgTex.createView() },
+          { binding: 1, resource: this.bgTex.createView() },
+          { binding: 2, resource: this.glyphTex[i]!.createView() },
+          { binding: 3, resource: this.atlas.texture.createView() },
+          { binding: 4, resource: this.sampler },
+          { binding: 5, resource: { buffer: this.rUniform } },
+          { binding: 6, resource: this.videoTex.createView() },
+          { binding: 7, resource: this.sampler },
+        ],
+      });
+    }
   }
 
   private ready(): boolean {
-    return !!(this.videoTex && this.fgTex && this.computeBG && this.renderBG);
+    return !!(this.videoTex && this.fgTex && this.computeBG[0] && this.renderBG[0]);
   }
 
   private uploadSource(
@@ -199,10 +210,11 @@ export class Renderer {
 
   private encode(targetView: GPUTextureView) {
     const enc = this.device.createCommandEncoder();
+    const i = this.pp;
 
     const cp = enc.beginComputePass();
     cp.setPipeline(this.computePipeline);
-    cp.setBindGroup(0, this.computeBG!);
+    cp.setBindGroup(0, this.computeBG[i]!);
     cp.dispatchWorkgroups(Math.ceil(this.gridW / 8), Math.ceil(this.gridH / 8), 1);
     cp.end();
 
@@ -212,11 +224,12 @@ export class Renderer {
       ],
     });
     rp.setPipeline(this.renderPipeline);
-    rp.setBindGroup(0, this.renderBG!);
+    rp.setBindGroup(0, this.renderBG[i]!);
     rp.draw(3);
     rp.end();
 
     this.device.queue.submit([enc.finish()]);
+    this.pp = 1 - i;
   }
 
   render(

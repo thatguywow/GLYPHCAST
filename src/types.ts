@@ -5,13 +5,20 @@ export interface VideoConfig {
   description?: Uint8Array;
 }
 
-/** Render mode. Higher = more fidelity, less "text" character. */
+/**
+ * Render mode. Ascending fidelity, descending "text" character.
+ * Block modes divide each cell into real-colour sub-cells; more divisions means
+ * more detail and more cost, converging on plain video.
+ */
 export enum Mode {
   AsciiMono = 0,
   AsciiColor = 1,
-  HalfBlock = 2, // 1x2 real-color sub-cells
-  QuarterBlock = 3, // 2x2 real-color sub-cells (max detail)
-  FullBlock = 4, // 1x1 colored cell (mosaic)
+  HalfBlock = 2, // 1x2
+  QuarterBlock = 3, // 2x2
+  FullBlock = 4, // 1x1 mosaic
+  Sextant = 5, // 2x3
+  Octant = 6, // 2x4
+  Hex = 7, // 4x4 — highest fidelity, highest cost
 }
 
 export interface RenderParams {
@@ -19,11 +26,18 @@ export interface RenderParams {
   cols: number;
   /** Desired output pixels per cell. Reduced automatically to respect maxWidth. */
   cellPx: number;
-  /** Hard cap on output width. Keeps the render target sane (perf) regardless of cols. */
+  /** Hard cap on output width. Keeps the render target sane regardless of cols. */
   maxWidth: number;
   mode: number;
   /** Per-cell glyph shape matching (max quality). Off = fast luminance ramp. */
   matchGlyphs: boolean;
+  /**
+   * Temporal hysteresis: keep the previous frame's glyph when its match error is
+   * within this fraction of the best glyph's. Kills the shimmer that appears when
+   * two glyphs score nearly equal and the winner flips frame to frame.
+   * 0 disables it.
+   */
+  hysteresis: number;
   /** Output brightness multiplier applied before gamma. */
   gain: number;
   /** Output gamma. >1 lifts midtones. */
@@ -38,6 +52,7 @@ export const DEFAULT_PARAMS: RenderParams = {
   maxWidth: 1920,
   mode: Mode.AsciiColor,
   matchGlyphs: true,
+  hysteresis: 0.18,
   gain: 1.0,
   gamma: 1.0,
   tint: [0.65, 1.0, 0.72],

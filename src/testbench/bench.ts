@@ -21,6 +21,7 @@ const base = (p: Partial<RenderParams>): RenderParams => ({
   ...DEFAULT_PARAMS,
   cols: COLS,
   cellPx: CELL,
+  hysteresis: 0, // deterministic by default; the flicker test varies it explicitly
   ...p,
 });
 
@@ -28,9 +29,12 @@ const CONFIGS: { label: string; params: RenderParams }[] = [
   { label: 'ASCII color RAMP', params: base({ mode: Mode.AsciiColor, matchGlyphs: false }) },
   { label: 'ASCII color MATCH', params: base({ mode: Mode.AsciiColor, matchGlyphs: true }) },
   { label: 'ASCII mono MATCH', params: base({ mode: Mode.AsciiMono, matchGlyphs: true }) },
-  { label: 'Half-block', params: base({ mode: Mode.HalfBlock }) },
-  { label: 'Quarter-block', params: base({ mode: Mode.QuarterBlock }) },
-  { label: 'Full-block', params: base({ mode: Mode.FullBlock }) },
+  { label: 'Half-block 1x2', params: base({ mode: Mode.HalfBlock }) },
+  { label: 'Quarter-block 2x2', params: base({ mode: Mode.QuarterBlock }) },
+  { label: 'Full-block 1x1', params: base({ mode: Mode.FullBlock }) },
+  { label: 'Sextant 2x3', params: base({ mode: Mode.Sextant }) },
+  { label: 'Octant 2x4', params: base({ mode: Mode.Octant }) },
+  { label: 'Hex 4x4', params: base({ mode: Mode.Hex }) },
 ];
 
 interface Row {
@@ -80,6 +84,41 @@ async function perf(label: string, params: RenderParams, iterations = 60) {
   };
 }
 
+/** Draws a pattern shifted by `dx` px — a sub-cell nudge, far below one cell. */
+function shifted(src: HTMLCanvasElement, dx: number): HTMLCanvasElement {
+  const cv = document.createElement('canvas');
+  cv.width = src.width;
+  cv.height = src.height;
+  const ctx = cv.getContext('2d')!;
+  ctx.drawImage(src, dx, 0);
+  return cv;
+}
+
+/**
+ * Temporal stability. Nudges the source by a fraction of a cell across frames and
+ * measures how much the OUTPUT churns. Glyph choice is discrete, so two glyphs
+ * scoring nearly equal can flip on a trivial input change — that is the shimmer
+ * hysteresis exists to suppress. Lower = steadier.
+ */
+async function flicker(hysteresis: number) {
+  renderer.setParams(base({ mode: Mode.AsciiColor, matchGlyphs: true, hysteresis }));
+  const src = pattern('scene');
+  let prev: Uint8ClampedArray | null = null;
+  let acc = 0;
+  let n = 0;
+  for (let f = 0; f < 6; f++) {
+    const out = await renderer.readback(shifted(src, f), src.width, src.height);
+    if (prev) {
+      let sum = 0;
+      for (let i = 0; i < out.rgba.length; i += 4) sum += Math.abs(out.rgba[i] - prev[i]);
+      acc += sum / (out.rgba.length / 4);
+      n++;
+    }
+    prev = out.rgba;
+  }
+  return { hysteresis, meanFrameDelta: +(acc / Math.max(n, 1)).toFixed(2) };
+}
+
 async function run() {
   const canvas = document.getElementById('gpu') as HTMLCanvasElement;
   const gpu = await initGPU(canvas);
@@ -107,6 +146,10 @@ async function run() {
   perfRows.push(await perf('Quarter 320c', base({ mode: Mode.QuarterBlock, cols: 320 })));
   (window as any).__PERF__ = perfRows;
   document.getElementById('perf')!.textContent = JSON.stringify(perfRows, null, 1);
+
+  const flickerRows = [await flicker(0), await flicker(0.18), await flicker(0.4)];
+  (window as any).__FLICKER__ = flickerRows;
+  document.getElementById('flicker')!.textContent = JSON.stringify(flickerRows, null, 1);
 
   (window as any).__BENCH_DONE__ = true;
 }
