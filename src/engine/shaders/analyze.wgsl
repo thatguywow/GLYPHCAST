@@ -1,11 +1,10 @@
 // Pass 1: analyse each cell of the source frame.
 //
-// For every cell we build a 4x4 luminance signature, split the cell into "ink"
-// and "paper" by its own midpoint, and derive a foreground + background colour.
-// When matching is enabled we then pick the glyph whose ink pattern best fits the
-// cell (sum of squared differences over the normalised signature) — this is what
-// makes edges, diagonals and texture appear naturally, instead of mapping
-// brightness onto an arbitrary ramp.
+// For every cell we build a 4x8 luminance signature, cluster the cell's colours
+// into an "ink" and a "paper" group, and pick the glyph whose ink pattern best
+// fits the cell (sum of squared differences over the normalised signature).
+// Matching by SHAPE rather than brightness is what makes edges, diagonals and
+// texture appear naturally instead of smearing into a brightness ramp.
 
 struct AU {
   gridW: u32,
@@ -23,10 +22,13 @@ struct AU {
 @group(0) @binding(2) var bgTex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(3) var glyphTex: texture_storage_2d<r32uint, write>;
 @group(0) @binding(4) var<uniform> u: AU;
-@group(0) @binding(5) var<storage, read> sig: array<vec4f>;   // 4 vec4 rows per glyph
-@group(0) @binding(6) var<storage, read> ramp: array<u32>;    // coverage-sorted indices
+@group(0) @binding(5) var<storage, read> sig: array<vec4f>;   // SIGH vec4 rows per glyph
+@group(0) @binding(6) var<storage, read> ramp: array<u32>;
 
-const SIG: u32 = 4u;
+const SIGW: u32 = 4u;
+const SIGH: u32 = 8u;
+const N: u32 = 32u;      // SIGW * SIGH
+const ROWS: u32 = 8u;    // vec4 rows per glyph
 
 fn lum(c: vec3f) -> f32 {
   return dot(c, vec3f(0.299, 0.587, 0.114));
@@ -38,27 +40,24 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
 
-  // Source-texel block covered by this cell.
   let bx = f32(u.videoW) / f32(u.gridW);
   let by = f32(u.videoH) / f32(u.gridH);
   let x0 = f32(gid.x) * bx;
   let y0 = f32(gid.y) * by;
 
-  // Sub-block accumulation: 4x4 signature of luminance + colour.
-  var sLum: array<f32, 16>;
-  var sCol: array<vec3f, 16>;
+  var sLum: array<f32, 32>;
+  var sCol: array<vec3f, 32>;
 
-  let sw = bx / f32(SIG);
-  let sh = by / f32(SIG);
-  // Sample up to 3x3 source texels per sub-block (16 sub-blocks => <=144 taps).
+  let sw = bx / f32(SIGW);
+  let sh = by / f32(SIGH);
   let stepsX = max(1u, min(3u, u32(sw)));
   let stepsY = max(1u, min(3u, u32(sh)));
 
   var lo = 1.0;
   var hi = 0.0;
 
-  for (var sy: u32 = 0u; sy < SIG; sy++) {
-    for (var sx: u32 = 0u; sx < SIG; sx++) {
+  for (var sy: u32 = 0u; sy < SIGH; sy++) {
+    for (var sx: u32 = 0u; sx < SIGW; sx++) {
       var acc = vec3f(0.0);
       var n = 0.0;
       for (var ty: u32 = 0u; ty < stepsY; ty++) {
@@ -72,7 +71,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
       }
       let c = acc / max(n, 1.0);
-      let i = sy * SIG + sx;
+      let i = sy * SIGW + sx;
       sCol[i] = c;
       let l = lum(c);
       sLum[i] = l;
@@ -81,24 +80,38 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
-  // Normalise the cell's own dynamic range so matching compares SHAPE, not level.
   let range = max(hi - lo, 1e-4);
-  let mid = (hi + lo) * 0.5;
 
+  // Two-means clustering on luminance: far better ink/paper separation than a
+  // fixed midpoint, which mis-splits cells whose content is skewed bright or dark.
+  var cFg = hi;
+  var cBg = lo;
+  for (var it: u32 = 0u; it < 3u; it++) {
+    var sumF = 0.0; var nF = 0.0;
+    var sumB = 0.0; var nB = 0.0;
+    for (var i: u32 = 0u; i < N; i++) {
+      if (abs(sLum[i] - cFg) <= abs(sLum[i] - cBg)) {
+        sumF += sLum[i]; nF += 1.0;
+      } else {
+        sumB += sLum[i]; nB += 1.0;
+      }
+    }
+    if (nF > 0.0) { cFg = sumF / nF; }
+    if (nB > 0.0) { cBg = sumB / nB; }
+  }
+
+  // Final assignment -> average colour of each cluster.
   var fg = vec3f(0.0);
   var bg = vec3f(0.0);
   var nf = 0.0;
   var nb = 0.0;
-  for (var i: u32 = 0u; i < 16u; i++) {
-    if (sLum[i] >= mid) {
-      fg += sCol[i];
-      nf += 1.0;
+  for (var i: u32 = 0u; i < N; i++) {
+    if (abs(sLum[i] - cFg) <= abs(sLum[i] - cBg)) {
+      fg += sCol[i]; nf += 1.0;
     } else {
-      bg += sCol[i];
-      nb += 1.0;
+      bg += sCol[i]; nb += 1.0;
     }
   }
-  // A flat cell has no meaningful split — collapse both to the mean.
   if (nf > 0.0) { fg = fg / nf; }
   if (nb > 0.0) { bg = bg / nb; }
   if (nf == 0.0) { fg = bg; }
@@ -107,13 +120,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var best: u32 = 0u;
 
   if (u.matchGlyphs == 1u) {
-    // Pick the glyph whose ink pattern minimises squared error against the cell.
     var bestErr = 1e9;
     for (var g: u32 = 0u; g < u.glyphCount; g++) {
       var err = 0.0;
-      for (var r: u32 = 0u; r < SIG; r++) {
-        let row = sig[g * SIG + r];
-        let b = r * SIG;
+      for (var r: u32 = 0u; r < ROWS; r++) {
+        let row = sig[g * ROWS + r];
+        let b = r * SIGW;
         let d0 = row.x - (sLum[b + 0u] - lo) / range;
         let d1 = row.y - (sLum[b + 1u] - lo) / range;
         let d2 = row.z - (sLum[b + 2u] - lo) / range;
@@ -126,10 +138,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       }
     }
   } else {
-    // Fast path: map mean luminance onto the coverage-sorted ramp.
     var mean = 0.0;
-    for (var i: u32 = 0u; i < 16u; i++) { mean += sLum[i]; }
-    mean = mean / 16.0;
+    for (var i: u32 = 0u; i < N; i++) { mean += sLum[i]; }
+    mean = mean / f32(N);
     let idx = min(u32(clamp(mean, 0.0, 1.0) * f32(u.rampLen - 1u) + 0.5), u.rampLen - 1u);
     best = ramp[idx];
   }

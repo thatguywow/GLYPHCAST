@@ -41,7 +41,10 @@ interface Row {
 
 let renderer!: Renderer;
 const cache: Partial<Record<PatternName, HTMLCanvasElement>> = {};
-const pattern = (n: PatternName) => (cache[n] ??= makePattern(n));
+// Sources are rendered well above output resolution so the reference is produced
+// by DOWNscaling (sharp) rather than upscaling (blurry). A blurry reference is
+// insensitive to fine detail and would hide real quality changes.
+const pattern = (n: PatternName) => (cache[n] ??= makePattern(n, 1920, 1080));
 
 function referenceRGBA(src: HTMLCanvasElement, w: number, h: number): Uint8ClampedArray {
   const cv = document.createElement('canvas');

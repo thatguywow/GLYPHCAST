@@ -1,6 +1,6 @@
 export interface GlyphAtlas {
   texture: GPUTexture;
-  /** Per-glyph 4x4 ink-coverage signature, flattened as vec4 rows (16 floats/glyph). */
+  /** Per-glyph 4x8 ink-coverage signature, flattened as vec4 rows (32 floats/glyph). */
   signatures: Float32Array;
   /** Mean ink coverage per glyph, ascending order == the luminance ramp order. */
   coverage: Float32Array;
@@ -23,7 +23,11 @@ const CHARS = [
   'M', 'W', '&', '$', '0', '8', '#', '%', 'B', '@', '█',
 ];
 
-const SIG = 4; // signature resolution (SIG x SIG per glyph)
+// Signature grid per glyph. Taller than wide: glyphs differ far more vertically
+// (ascenders, x-height, descenders) than horizontally, so vertical resolution buys
+// the most matching accuracy per unit of compute.
+const SIGW = 4;
+const SIGH = 8;
 
 /**
  * Rasterises every glyph into a single-row texture atlas and computes each
@@ -49,15 +53,15 @@ export function buildGlyphAtlas(device: GPUDevice, tile = 32): GlyphAtlas {
 
   // Per-glyph SIG x SIG coverage signature, from the rasterised pixels.
   const px = ctx.getImageData(0, 0, w, h).data;
-  const signatures = new Float32Array(n * SIG * SIG);
+  const signatures = new Float32Array(n * SIGW * SIGH);
   const coverage = new Float32Array(n);
-  const cellW = tile / SIG;
-  const cellH = tile / SIG;
+  const cellW = tile / SIGW;
+  const cellH = tile / SIGH;
 
   for (let g = 0; g < n; g++) {
     let total = 0;
-    for (let sy = 0; sy < SIG; sy++) {
-      for (let sx = 0; sx < SIG; sx++) {
+    for (let sy = 0; sy < SIGH; sy++) {
+      for (let sx = 0; sx < SIGW; sx++) {
         let sum = 0;
         let count = 0;
         const x0 = Math.floor(g * tile + sx * cellW);
@@ -71,11 +75,11 @@ export function buildGlyphAtlas(device: GPUDevice, tile = 32): GlyphAtlas {
           }
         }
         const v = count ? sum / count : 0;
-        signatures[g * SIG * SIG + sy * SIG + sx] = v;
+        signatures[g * SIGW * SIGH + sy * SIGW + sx] = v;
         total += v;
       }
     }
-    coverage[g] = total / (SIG * SIG);
+    coverage[g] = total / (SIGW * SIGH);
   }
 
   // Ramp: glyph indices sorted by ink coverage (sparse -> dense).
