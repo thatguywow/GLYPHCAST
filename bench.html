@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>GLYPHCAST — quality bench</title>
+    <style>
+      body { background: #0a0a0c; color: #e6e6ea; font: 13px ui-monospace, monospace; padding: 16px; }
+      h3 { margin: 0 0 12px; }
+      table { border-collapse: collapse; }
+      th, td { border: 1px solid #2a2a33; padding: 4px 10px; text-align: right; }
+      th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+      thead th { color: #6cff9a; }
+      #json { display: none; }
+    </style>
+  </head>
+  <body>
+    <h3>GLYPHCAST quality bench</h3>
+    <canvas id="gpu" width="16" height="16" style="display: none"></canvas>
+    <div id="out">running…</div>
+    <pre id="json"></pre>
+    <script type="module" src="/src/testbench/bench.ts"></script>
+  </body>
+</html>

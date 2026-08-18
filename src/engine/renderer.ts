@@ -154,54 +154,137 @@ export class Renderer {
     });
   }
 
+  private ready(): boolean {
+    return !!(this.videoTex && this.cellTex && this.computeBG && this.renderBG);
+  }
+
+  private uploadSource(
+    source: VideoFrame | HTMLCanvasElement | OffscreenCanvas | ImageBitmap,
+    srcW: number,
+    srcH: number,
+  ) {
+    const anySrc = source as { displayWidth?: number; width?: number; displayHeight?: number; height?: number };
+    const w = srcW || anySrc.displayWidth || anySrc.width || 0;
+    const h = srcH || anySrc.displayHeight || anySrc.height || 0;
+    this.setSource(w, h);
+    this.device.queue.copyExternalImageToTexture(
+      { source: source as any },
+      { texture: this.videoTex! },
+      [w, h],
+    );
+  }
+
+  /** Records the compute + render passes into `targetView` and submits. */
+  private encode(targetView: GPUTextureView) {
+    const enc = this.device.createCommandEncoder();
+
+    const cp = enc.beginComputePass();
+    cp.setPipeline(this.computePipeline);
+    cp.setBindGroup(0, this.computeBG!);
+    cp.dispatchWorkgroups(Math.ceil(this.gridW / 8), Math.ceil(this.gridH / 8), 1);
+    cp.end();
+
+    const rp = enc.beginRenderPass({
+      colorAttachments: [
+        { view: targetView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' },
+      ],
+    });
+    rp.setPipeline(this.renderPipeline);
+    rp.setBindGroup(0, this.renderBG!);
+    rp.draw(3);
+    rp.end();
+
+    this.device.queue.submit([enc.finish()]);
+  }
+
   /**
    * Renders one frame from any external image source (a decoded VideoFrame, or a
-   * 2D canvas / ImageBitmap for the demo generator). With no source, re-renders
-   * the last-uploaded frame (used for live param changes while paused).
+   * 2D canvas / ImageBitmap). With no source, re-renders the last-uploaded frame
+   * (used for live param changes while paused).
    */
   render(
     source?: VideoFrame | HTMLCanvasElement | OffscreenCanvas | ImageBitmap,
     srcW = 0,
     srcH = 0,
   ) {
-    if (source) {
-      const anySrc = source as { displayWidth?: number; width?: number; displayHeight?: number; height?: number };
-      const w = srcW || anySrc.displayWidth || anySrc.width || 0;
-      const h = srcH || anySrc.displayHeight || anySrc.height || 0;
-      this.setSource(w, h);
-      this.device.queue.copyExternalImageToTexture(
-        { source: source as any },
-        { texture: this.videoTex! },
-        [w, h],
-      );
-    }
+    if (source) this.uploadSource(source, srcW, srcH);
+    if (!this.ready()) return;
+    this.encode(this.gpu.context.getCurrentTexture().createView());
+  }
 
-    if (!this.videoTex || !this.cellTex || !this.computeBG || !this.renderBG) return;
+  /**
+   * Headless render: draws into an offscreen texture and reads the pixels back to
+   * the CPU. Works with no visible canvas / no requestAnimationFrame — the basis
+   * for the automated quality harness. Returns RGBA (converted from the canvas
+   * format's channel order).
+   */
+  async readback(
+    source?: VideoFrame | HTMLCanvasElement | OffscreenCanvas | ImageBitmap,
+    srcW = 0,
+    srcH = 0,
+  ): Promise<{ width: number; height: number; rgba: Uint8ClampedArray }> {
+    if (source) this.uploadSource(source, srcW, srcH);
+    if (!this.ready()) throw new Error('Renderer has no source to read back.');
 
-    const enc = this.device.createCommandEncoder();
-
-    const cp = enc.beginComputePass();
-    cp.setPipeline(this.computePipeline);
-    cp.setBindGroup(0, this.computeBG);
-    cp.dispatchWorkgroups(Math.ceil(this.gridW / 8), Math.ceil(this.gridH / 8), 1);
-    cp.end();
-
-    const view = this.gpu.context.getCurrentTexture().createView();
-    const rp = enc.beginRenderPass({
-      colorAttachments: [
-        {
-          view,
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        },
-      ],
+    const [w, h] = this.outputSize;
+    const target = this.device.createTexture({
+      label: 'readback-target',
+      size: [w, h, 1],
+      format: this.gpu.format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
     });
-    rp.setPipeline(this.renderPipeline);
-    rp.setBindGroup(0, this.renderBG);
-    rp.draw(3);
-    rp.end();
+    this.encode(target.createView());
 
+    const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
+    const buffer = this.device.createBuffer({
+      size: bytesPerRow * h,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const enc = this.device.createCommandEncoder();
+    enc.copyTextureToBuffer({ texture: target }, { buffer, bytesPerRow, rowsPerImage: h }, [w, h, 1]);
     this.device.queue.submit([enc.finish()]);
+
+    await buffer.mapAsync(GPUMapMode.READ);
+    const src = new Uint8Array(buffer.getMappedRange());
+    const rgba = new Uint8ClampedArray(w * h * 4);
+    const bgra = this.gpu.format.startsWith('bgra');
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * bytesPerRow + x * 4;
+        const o = (y * w + x) * 4;
+        if (bgra) {
+          rgba[o] = src[i + 2];
+          rgba[o + 1] = src[i + 1];
+          rgba[o + 2] = src[i];
+          rgba[o + 3] = src[i + 3];
+        } else {
+          rgba[o] = src[i];
+          rgba[o + 1] = src[i + 1];
+          rgba[o + 2] = src[i + 2];
+          rgba[o + 3] = src[i + 3];
+        }
+      }
+    }
+    buffer.unmap();
+    buffer.destroy();
+    target.destroy();
+    return { width: w, height: h, rgba };
+  }
+
+  /** Renders headlessly and returns a PNG data URL (for visual inspection). */
+  async capturePNG(
+    source?: VideoFrame | HTMLCanvasElement | OffscreenCanvas | ImageBitmap,
+    srcW = 0,
+    srcH = 0,
+  ): Promise<string> {
+    const { width, height, rgba } = await this.readback(source, srcW, srcH);
+    const cv = document.createElement('canvas');
+    cv.width = width;
+    cv.height = height;
+    const ctx = cv.getContext('2d')!;
+    const img = ctx.createImageData(width, height);
+    img.data.set(rgba);
+    ctx.putImageData(img, 0, 0);
+    return cv.toDataURL('image/png');
   }
 }
