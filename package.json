@@ -1,0 +1,20 @@
+{
+  "name": "glyphcast",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "GPU-accelerated ASCII video engine. WebCodecs decode + WebGPU edge-aware rendering. 1080p60, zero backend.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "mp4box": "^0.5.2"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.44",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0"
+  }
+}

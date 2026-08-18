@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GLYPHCAST</title>
+    <style>
+      :root {
+        --bg: #0a0a0c;
+        --panel: #141419;
+        --border: #26262e;
+        --text: #e6e6ea;
+        --muted: #8a8a96;
+        --accent: #6cff9a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        display: grid;
+        grid-template-columns: 300px 1fr;
+        height: 100vh;
+      }
+      aside {
+        background: var(--panel);
+        border-right: 1px solid var(--border);
+        padding: 20px;
+        overflow-y: auto;
+      }
+      h1 {
+        font-size: 20px;
+        letter-spacing: 3px;
+        margin: 0 0 4px;
+        font-weight: 800;
+      }
+      .tag { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
+      .group { margin-bottom: 18px; }
+      label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+      input[type="range"] { width: 100%; }
+      select, button {
+        width: 100%;
+        background: #1e1e26;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 9px 12px;
+        font-size: 13px;
+      }
+      button { cursor: pointer; font-weight: 600; }
+      button.primary { background: var(--accent); color: #062; border-color: transparent; }
+      button:disabled { opacity: 0.4; cursor: not-allowed; }
+      .row { display: flex; gap: 8px; }
+      .val { color: var(--accent); float: right; font-variant-numeric: tabular-nums; }
+      main {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        overflow: hidden;
+        position: relative;
+      }
+      canvas {
+        max-width: 100%;
+        max-height: 100%;
+        background: #000;
+        image-rendering: pixelated;
+        border-radius: 6px;
+      }
+      #drop {
+        position: absolute;
+        inset: 24px;
+        border: 2px dashed var(--border);
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--muted);
+        text-align: center;
+        pointer-events: none;
+      }
+      #drop.hidden { display: none; }
+      #stats {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        font: 12px ui-monospace, monospace;
+        color: var(--accent);
+        background: rgba(0, 0, 0, 0.5);
+        padding: 6px 10px;
+        border-radius: 6px;
+        pointer-events: none;
+      }
+      .err { color: #ff6b6b; font-size: 12px; margin-top: 10px; min-height: 16px; }
+      .hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <aside>
+      <h1>GLYPHCAST</h1>
+      <div class="tag">GPU ASCII video engine</div>
+
+      <div class="group">
+        <button id="pick" class="primary">Open MP4…</button>
+        <input id="file" type="file" accept="video/mp4,video/*" hidden />
+        <div class="hint">H.264 MP4 recommended. Decoded 100% locally.</div>
+      </div>
+
+      <div class="group row">
+        <button id="play" disabled>Play</button>
+        <button id="restart" disabled>Restart</button>
+      </div>
+
+      <div class="group">
+        <label>Columns <span class="val" id="colsVal">320</span></label>
+        <input id="cols" type="range" min="80" max="480" step="20" value="320" />
+      </div>
+
+      <div class="group">
+        <label>Cell size (px) <span class="val" id="cellVal">6</span></label>
+        <input id="cell" type="range" min="4" max="16" step="1" value="6" />
+      </div>
+
+      <div class="group">
+        <label>Color</label>
+        <select id="color">
+          <option value="1">Original color</option>
+          <option value="0">Mono (tint)</option>
+        </select>
+      </div>
+
+      <div class="group">
+        <label><input type="checkbox" id="edge" checked /> Edge-aware glyphs (Sobel)</label>
+      </div>
+
+      <div class="group">
+        <label>Edge threshold <span class="val" id="edgeVal">0.18</span></label>
+        <input id="edgeThresh" type="range" min="0.02" max="0.6" step="0.01" value="0.18" />
+      </div>
+
+      <div class="err" id="err"></div>
+    </aside>
+
+    <main>
+      <canvas id="canvas"></canvas>
+      <div id="stats"></div>
+      <div id="drop">Drop an MP4 here, or click “Open MP4…”.</div>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
