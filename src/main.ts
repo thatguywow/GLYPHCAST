@@ -140,9 +140,23 @@ async function main() {
     applyParams();
   };
 
-  const color = $('color') as HTMLSelectElement;
-  color.onchange = () => {
-    params.colorMode = +color.value;
+  const mode = $('mode') as HTMLSelectElement;
+  mode.onchange = () => {
+    params.mode = +mode.value;
+    applyParams();
+  };
+
+  const gain = $('gain') as HTMLInputElement;
+  gain.oninput = () => {
+    params.gain = +gain.value;
+    $('gainVal').textContent = (+gain.value).toFixed(2);
+    applyParams();
+  };
+
+  const gamma = $('gamma') as HTMLInputElement;
+  gamma.oninput = () => {
+    params.gamma = +gamma.value;
+    $('gammaVal').textContent = (+gamma.value).toFixed(2);
     applyParams();
   };
 

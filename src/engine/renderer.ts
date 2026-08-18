@@ -58,7 +58,7 @@ export class Renderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this.rUniform = dev.createBuffer({
-      size: 48,
+      size: 64,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
   }
@@ -114,8 +114,8 @@ export class Renderer {
     const d = new Uint32Array([cols, rows, 0, 0, this.videoW, this.videoH, 0, 0]);
     this.device.queue.writeBuffer(this.dUniform, 0, d);
 
-    // Render uniforms (48 bytes, mixed u32/f32).
-    const buf = new ArrayBuffer(48);
+    // Render uniforms (64 bytes, mixed u32/f32 — must match RU in ascii.wgsl).
+    const buf = new ArrayBuffer(64);
     const dv = new DataView(buf);
     dv.setUint32(0, cols, true);
     dv.setUint32(4, rows, true);
@@ -123,12 +123,14 @@ export class Renderer {
     dv.setUint32(12, this.atlas.rampLen, true);
     dv.setFloat32(16, this.params.edgeThreshold, true);
     dv.setUint32(20, this.params.edgeEnable ? 1 : 0, true);
-    dv.setUint32(24, this.params.colorMode, true);
-    dv.setUint32(28, 0, true);
-    dv.setFloat32(32, this.params.tint[0], true);
-    dv.setFloat32(36, this.params.tint[1], true);
-    dv.setFloat32(40, this.params.tint[2], true);
-    dv.setFloat32(44, 0, true);
+    dv.setUint32(24, this.params.mode, true);
+    dv.setFloat32(28, this.params.gamma, true);
+    dv.setFloat32(32, this.params.gain, true);
+    dv.setFloat32(36, this.params.bgFloor, true);
+    dv.setFloat32(40, this.params.tint[0], true);
+    dv.setFloat32(44, this.params.tint[1], true);
+    dv.setFloat32(48, this.params.tint[2], true);
+    // 52..63 padding
     this.device.queue.writeBuffer(this.rUniform, 0, buf);
 
     this.computeBG = this.device.createBindGroup({
@@ -146,6 +148,8 @@ export class Renderer {
         { binding: 1, resource: this.atlas.texture.createView() },
         { binding: 2, resource: this.sampler },
         { binding: 3, resource: { buffer: this.rUniform } },
+        { binding: 4, resource: this.videoTex.createView() },
+        { binding: 5, resource: this.sampler },
       ],
     });
   }
