@@ -81,6 +81,22 @@
         pointer-events: none;
       }
       #drop.hidden { display: none; }
+      #fatal {
+        position: absolute;
+        inset: 0;
+        background: rgba(6, 6, 10, 0.94);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 32px;
+        z-index: 10;
+      }
+      #fatal.hidden { display: none; }
+      #fatal h2 { color: #ff6b6b; margin: 0 0 12px; }
+      #fatal p { color: var(--muted); max-width: 460px; }
+      #fatal code { color: var(--accent); }
       #stats {
         position: absolute;
         top: 12px;
@@ -110,6 +126,11 @@
       <div class="group row">
         <button id="play" disabled>Play</button>
         <button id="restart" disabled>Restart</button>
+      </div>
+
+      <div class="group">
+        <button id="demo">▶ Demo (no file, no server)</button>
+        <div class="hint">Procedural test scene — proves the GPU engine works.</div>
       </div>
 
       <div class="group">
@@ -145,7 +166,16 @@
     <main>
       <canvas id="canvas"></canvas>
       <div id="stats"></div>
-      <div id="drop">Drop an MP4 here, or click “Open MP4…”.</div>
+      <div id="drop">Drop an MP4 here, click “Open MP4…”, or hit “Demo”.</div>
+      <div id="fatal" class="hidden">
+        <h2>WebGPU unavailable</h2>
+        <p id="fatalMsg"></p>
+        <p>
+          Serve the app with <code>npm run dev</code> and open it in
+          <strong>Chrome or Edge 113+</strong>. Opening the HTML file directly
+          (<code>file://</code>) will not work.
+        </p>
+      </div>
     </main>
 
     <script type="module" src="/src/main.ts"></script>

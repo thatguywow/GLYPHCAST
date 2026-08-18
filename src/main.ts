@@ -2,6 +2,7 @@ import { initGPU } from './engine/gpu';
 import { buildGlyphAtlas } from './engine/glyphAtlas';
 import { Renderer } from './engine/renderer';
 import { Player } from './player/player';
+import { DemoSource } from './demo/demoSource';
 import { DEFAULT_PARAMS, type RenderParams } from './types';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -10,14 +11,23 @@ const canvas = $('canvas') as HTMLCanvasElement;
 const errEl = $('err');
 const dropEl = $('drop');
 const statsEl = $('stats');
+const fatalEl = $('fatal');
+const fatalMsg = $('fatalMsg');
 
 const playBtn = $('play') as HTMLButtonElement;
 const restartBtn = $('restart') as HTMLButtonElement;
 const pickBtn = $('pick') as HTMLButtonElement;
 const fileInput = $('file') as HTMLInputElement;
+const demoBtn = $('demo') as HTMLButtonElement;
 
 function showError(msg: string) {
   errEl.textContent = msg;
+  console.error(msg);
+}
+
+function showFatal(msg: string) {
+  fatalMsg.textContent = msg;
+  fatalEl.classList.remove('hidden');
   console.error(msg);
 }
 
@@ -26,7 +36,8 @@ async function main() {
   try {
     gpu = await initGPU(canvas);
   } catch (e) {
-    showError((e as Error).message);
+    // Without a GPU nothing can render — surface it loudly, not as tiny red text.
+    showFatal((e as Error).message);
     return;
   }
 
@@ -34,6 +45,7 @@ async function main() {
   const params: RenderParams = { ...DEFAULT_PARAMS };
   const renderer = new Renderer(gpu, atlas, params);
   const player = new Player(renderer);
+  const demo = new DemoSource();
 
   let loadedFile: File | null = null;
 
@@ -48,13 +60,39 @@ async function main() {
     statsEl.textContent = `${s.fps.toFixed(0)} fps · buf ${s.buffered} · ${s.currentTime.toFixed(1)}s${dur}`;
   };
 
+  demo.onFrame = (cv, w, h) => renderer.render(cv, w, h);
+  demo.onStats = (fps) => {
+    statsEl.textContent = `DEMO · ${fps.toFixed(0)} fps · ${renderer.outputSize[0]}×${renderer.outputSize[1]}`;
+  };
+
+  function stopDemo() {
+    if (demo.isRunning) {
+      demo.stop();
+      demoBtn.textContent = '▶ Demo (no file, no server)';
+    }
+  }
+
   async function loadFile(file: File) {
+    stopDemo();
     loadedFile = file;
     dropEl.classList.add('hidden');
     playBtn.textContent = 'Play';
     playBtn.disabled = true;
     await player.load(file);
   }
+
+  // --- demo ---------------------------------------------------------------
+  demoBtn.onclick = () => {
+    if (demo.isRunning) {
+      stopDemo();
+      return;
+    }
+    player.pause();
+    playBtn.textContent = 'Play';
+    dropEl.classList.add('hidden');
+    demo.start();
+    demoBtn.textContent = '■ Stop demo';
+  };
 
   // --- file input ---------------------------------------------------------
   pickBtn.onclick = () => fileInput.click();
@@ -73,6 +111,7 @@ async function main() {
 
   // --- transport ----------------------------------------------------------
   playBtn.onclick = () => {
+    stopDemo();
     player.toggle();
     playBtn.textContent = player.isPlaying ? 'Pause' : 'Play';
   };
@@ -83,7 +122,8 @@ async function main() {
   // --- live params --------------------------------------------------------
   const applyParams = () => {
     renderer.setParams(params);
-    if (!player.isPlaying) player.rerender();
+    // Reflect changes immediately when nothing is actively driving frames.
+    if (!player.isPlaying && !demo.isRunning) player.rerender();
   };
 
   const cols = $('cols') as HTMLInputElement;

@@ -59,8 +59,15 @@ npm install
 npm run dev
 ```
 
-Open the printed URL, click **Open MP4…** (or drag one in). Chrome/Edge 113+ have
-WebGPU + WebCodecs on by default; Safari 18+ works; Firefox needs WebGPU enabled.
+Open the printed URL, then either:
+
+- Hit **Demo** — a procedural test scene runs through the full GPU renderer with
+  no file and no server. Fastest way to confirm the engine works and tune the look.
+- Click **Open MP4…** (or drag one in) to convert a local video.
+
+Chrome/Edge 113+ have WebGPU + WebCodecs on by default; Safari 18+ works; Firefox
+needs WebGPU enabled. If you see a red "WebGPU unavailable" panel, you're either on
+an unsupported browser or opened the file directly instead of via `npm run dev`.
 
 Build:
 
@@ -91,10 +98,24 @@ src/
 ## Roadmap
 
 - [x] **Phase 1** — Core engine: MP4 → WebGPU edge-aware ASCII, audio-synced.
-- [ ] **Phase 2** — More glyph sets, color grading, live tuning presets.
-- [ ] **Phase 3** — Studio: trim + export ASCII back to MP4; `.glyph` static format.
-- [ ] **Phase 4** — Streaming: HLS/DASH segments through WebCodecs (media-player replacement).
-- [ ] **Phase 5** — GitHub Pages CI deploy.
+- [x] **Phase 1.5** — Demo mode (no file/server) + hardened error handling.
+- [ ] **Phase 2** — More glyph sets, color grading, live tuning presets; WebGL2 fallback.
+- [ ] **Phase 3** — Self-hostable transcoder server: ffmpeg scales a source to a
+  compact glyph-cell stream, encrypts it (WSS), and serves it in real time. The
+  original media never reaches the client — only the lossy derivative does.
+- [ ] **Phase 4** — Embeddable client plugin: `<div data-glyphcast="wss://…">` that
+  decrypts + renders the cell stream on the viewer's GPU.
+- [ ] **Phase 5** — Live ingest (RTMP/HLS) + GitHub Pages / demo deploy.
+
+### Design stance (honest)
+
+- **Source protection is the real novelty:** server-side transcode means the
+  original never leaves the server, so a scraper gets glyph cells, not your video.
+- **Privacy-respecting, not "untraceable":** no analytics/cookies/fingerprinting,
+  self-hostable. But a server still sees connections and networks see metadata.
+- **Encryption ≠ DRM:** WSS protects the wire, but the client holds the key to
+  render, so a determined viewer can always capture what they can see. We raise the
+  cost, we don't reach zero. Nobody does.
 
 ## License
 

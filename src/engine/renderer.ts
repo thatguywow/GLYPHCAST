@@ -151,16 +151,22 @@ export class Renderer {
   }
 
   /**
-   * Renders one frame. If `frame` is given it is uploaded first; otherwise the
-   * last-uploaded frame is re-rendered (used for live param changes while paused).
+   * Renders one frame from any external image source (a decoded VideoFrame, or a
+   * 2D canvas / ImageBitmap for the demo generator). With no source, re-renders
+   * the last-uploaded frame (used for live param changes while paused).
    */
-  render(frame?: VideoFrame) {
-    if (frame) {
-      const w = frame.displayWidth;
-      const h = frame.displayHeight;
+  render(
+    source?: VideoFrame | HTMLCanvasElement | OffscreenCanvas | ImageBitmap,
+    srcW = 0,
+    srcH = 0,
+  ) {
+    if (source) {
+      const anySrc = source as { displayWidth?: number; width?: number; displayHeight?: number; height?: number };
+      const w = srcW || anySrc.displayWidth || anySrc.width || 0;
+      const h = srcH || anySrc.displayHeight || anySrc.height || 0;
       this.setSource(w, h);
       this.device.queue.copyExternalImageToTexture(
-        { source: frame },
+        { source: source as any },
         { texture: this.videoTex! },
         [w, h],
       );
