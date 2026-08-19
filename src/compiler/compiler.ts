@@ -26,6 +26,12 @@ export interface CompileOptions {
   frameStride?: number;
   /** Where bytes go. Defaults to memory; pass a FileSink for long compiles. */
   sink?: GlyphSink;
+  /**
+   * Called with each grid as it is encoded, before compression. The buffers are
+   * reused between frames, so copy anything that must outlive the call. Used by
+   * the tests to compare what was written against what plays back.
+   */
+  onFrame?: (index: number, frame: GlyphGridFrame) => void;
 }
 
 export interface SourceInfo {
@@ -229,6 +235,7 @@ export class Compiler {
 
       const grid = await this.renderer.readGlyphGrid();
       packInto(state, grid, cells, opts.color, shift);
+      opts.onFrame?.(count, state);
       await writer.addFrame(state, opts.keyInterval ?? 120);
 
       count++;

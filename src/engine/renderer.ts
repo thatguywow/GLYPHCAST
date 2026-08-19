@@ -33,6 +33,10 @@ export class Renderer {
   private videoH = 0;
   private gridW = 0;
   private gridH = 0;
+  /** When set, the grid comes from a file rather than from a video's aspect. */
+  private gridOverride: [number, number] | null = null;
+  private uploadGlyphs: Uint32Array | null = null;
+  private uploadRGBA: Uint8Array | null = null;
   private params: RenderParams;
 
   constructor(
@@ -108,8 +112,12 @@ export class Renderer {
     if (!this.videoTex || this.videoW === 0) return;
     const dev = this.device;
 
-    const cols = Math.max(8, Math.floor(this.params.cols));
-    const rows = Math.max(1, Math.round(cols * (this.videoH / this.videoW)));
+    const cols = this.gridOverride
+      ? this.gridOverride[0]
+      : Math.max(8, Math.floor(this.params.cols));
+    const rows = this.gridOverride
+      ? this.gridOverride[1]
+      : Math.max(1, Math.round(cols * (this.videoH / this.videoW)));
     this.gridW = cols;
     this.gridH = rows;
 
@@ -195,6 +203,82 @@ export class Renderer {
     }
   }
 
+  /**
+   * Switches the renderer to playing back a grid supplied from outside — a
+   * decoded .glyph file rather than a live video. The analysis pass is bypassed
+   * entirely; only the compositor runs, so playback needs no source video and no
+   * decoder at all.
+   */
+  setExternalGrid(cols: number, rows: number) {
+    this.gridOverride = [cols, rows];
+    if (!this.videoTex) {
+      // Bind groups still reference a video texture (block modes sample it), so
+      // stand up a 1x1 placeholder to keep the layout valid.
+      this.videoW = 1;
+      this.videoH = 1;
+      this.videoTex = this.device.createTexture({
+        label: 'placeholder-video',
+        size: [1, 1, 1],
+        format: 'rgba8unorm',
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+    }
+    this.uploadGlyphs = new Uint32Array(cols * rows);
+    this.uploadRGBA = new Uint8Array(cols * rows * 4);
+    this.rebuild();
+  }
+
+  /** Uploads a decoded grid into the cell textures. `fg`/`bg` are RGB triplets. */
+  writeGrid(glyphs: Uint8Array, fg?: Uint8Array, bg?: Uint8Array) {
+    if (!this.uploadGlyphs || !this.uploadRGBA || !this.glyphTex[this.pp]) return;
+    const n = this.gridW * this.gridH;
+
+    for (let i = 0; i < n; i++) this.uploadGlyphs[i] = glyphs[i];
+    this.device.queue.writeTexture(
+      { texture: this.glyphTex[this.pp]! },
+      this.uploadGlyphs.buffer as ArrayBuffer,
+      { bytesPerRow: this.gridW * 4, rowsPerImage: this.gridH },
+      [this.gridW, this.gridH, 1],
+    );
+
+    const upload = (src: Uint8Array | undefined, tex: GPUTexture, mono: boolean) => {
+      const dst = this.uploadRGBA!;
+      for (let i = 0; i < n; i++) {
+        const d = i * 4;
+        if (src) {
+          const s = i * 3;
+          dst[d] = src[s];
+          dst[d + 1] = src[s + 1];
+          dst[d + 2] = src[s + 2];
+        } else {
+          // Mono files carry no colour: ink is white, paper is black.
+          const v = mono ? 255 : 0;
+          dst[d] = v;
+          dst[d + 1] = v;
+          dst[d + 2] = v;
+        }
+        dst[d + 3] = 255;
+      }
+      this.device.queue.writeTexture(
+        { texture: tex },
+        dst.buffer as ArrayBuffer,
+        { bytesPerRow: this.gridW * 4, rowsPerImage: this.gridH },
+        [this.gridW, this.gridH, 1],
+      );
+    };
+    upload(fg, this.fgTex!, true);
+    upload(bg, this.bgTex!, false);
+  }
+
+  /** Draws the currently uploaded grid. Skips the analysis pass. */
+  renderGrid() {
+    if (!this.ready()) return;
+    this.encode(this.gpu.context.getCurrentTexture().createView(), true);
+  }
+
   private ready(): boolean {
     return !!(this.videoTex && this.fgTex && this.computeBG[0] && this.renderBG[0]);
   }
@@ -217,15 +301,17 @@ export class Renderer {
    * pixel pass is skipped. That pass rasterises the entire output (over two
    * megapixels at 1080p) and is pure waste for a frame nobody will look at.
    */
-  private encode(targetView?: GPUTextureView) {
+  private encode(targetView?: GPUTextureView, skipAnalysis = false) {
     const enc = this.device.createCommandEncoder();
     const i = this.pp;
 
-    const cp = enc.beginComputePass();
-    cp.setPipeline(this.computePipeline);
-    cp.setBindGroup(0, this.computeBG[i]!);
-    cp.dispatchWorkgroups(Math.ceil(this.gridW / 8), Math.ceil(this.gridH / 8), 1);
-    cp.end();
+    if (!skipAnalysis) {
+      const cp = enc.beginComputePass();
+      cp.setPipeline(this.computePipeline);
+      cp.setBindGroup(0, this.computeBG[i]!);
+      cp.dispatchWorkgroups(Math.ceil(this.gridW / 8), Math.ceil(this.gridH / 8), 1);
+      cp.end();
+    }
 
     if (targetView) {
       const rp = enc.beginRenderPass({
@@ -240,7 +326,10 @@ export class Renderer {
     }
 
     this.device.queue.submit([enc.finish()]);
-    this.pp = 1 - i;
+    // External grids are written into glyphTex[pp] and rendered from the same
+    // index, so the ping-pong must stay put; it only advances when the analysis
+    // pass produced a new frame to carry forward.
+    if (!skipAnalysis) this.pp = 1 - i;
   }
 
   /**

@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GLYPHCAST player</title>
+    <style>
+      :root {
+        --bg: #0a0a0c;
+        --panel: #141419;
+        --border: #26262e;
+        --text: #e6e6ea;
+        --muted: #8a8a96;
+        --accent: #6cff9a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+        flex-wrap: wrap;
+      }
+      h1 { font-size: 15px; letter-spacing: 3px; margin: 0; font-weight: 800; }
+      button {
+        background: #1e1e26;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 14px;
+        font-size: 13px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      button.primary { background: var(--accent); color: #062; border-color: transparent; }
+      button:disabled { opacity: 0.4; cursor: not-allowed; }
+      input[type="range"] { accent-color: var(--accent); }
+      #seek { flex: 1; min-width: 160px; }
+      .muted { color: var(--muted); font-size: 12px; }
+      main {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        overflow: hidden;
+        position: relative;
+      }
+      canvas {
+        max-width: 100%;
+        max-height: 100%;
+        background: #000;
+        image-rendering: pixelated;
+        border-radius: 6px;
+      }
+      #drop {
+        position: absolute;
+        inset: 16px;
+        border: 2px dashed var(--border);
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--muted);
+        text-align: center;
+        pointer-events: none;
+        padding: 20px;
+      }
+      #drop.hidden { display: none; }
+      #stats {
+        position: absolute;
+        top: 24px;
+        left: 24px;
+        font: 12px ui-monospace, monospace;
+        color: var(--accent);
+        background: rgba(0, 0, 0, 0.5);
+        padding: 6px 10px;
+        border-radius: 6px;
+        pointer-events: none;
+      }
+      #fatal {
+        position: absolute;
+        inset: 0;
+        background: rgba(6, 6, 10, 0.94);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 32px;
+        z-index: 10;
+      }
+      #fatal.hidden { display: none; }
+      #fatal h2 { color: #ff6b6b; margin: 0 0 12px; }
+      footer { padding: 8px 16px; border-top: 1px solid var(--border); background: var(--panel); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>GLYPHCAST</h1>
+      <button id="pick" class="primary">Open .glyph…</button>
+      <input id="file" type="file" accept=".glyph" hidden />
+      <button id="play" disabled>Play</button>
+      <input id="seek" type="range" min="0" max="1000" value="0" disabled />
+      <span class="muted">cell <span id="cellVal">8</span></span>
+      <input id="cell" type="range" min="3" max="16" step="1" value="8" style="width: 90px" />
+      <button id="copyText">Copy text</button>
+    </header>
+
+    <main>
+      <canvas id="canvas"></canvas>
+      <div id="stats"></div>
+      <div id="drop">
+        Drop a <strong>.glyph</strong> file here, or click “Open .glyph…”.<br />
+        <span class="muted">No video decoder involved — this plays from static hosting.</span>
+      </div>
+      <div id="fatal" class="hidden">
+        <h2>WebGPU unavailable</h2>
+        <p id="fatalMsg" class="muted"></p>
+        <p class="muted">Use Chrome or Edge 113+, and serve the page over http.</p>
+      </div>
+    </main>
+
+    <footer><span class="muted" id="info">No file loaded.</span></footer>
+
+    <script type="module" src="/src/playMain.ts"></script>
+  </body>
+</html>
