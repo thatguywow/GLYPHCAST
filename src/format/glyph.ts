@@ -21,11 +21,14 @@
  * CompressionStream, so there is no third-party codec dependency.
  *
  * Key frames carry every cell. Delta frames carry only cells whose glyph OR
- * colour changed, as an index list plus the matching planes.
+ * colour changed, addressed by a CHANGED-CELL BITMAP (one bit per cell) rather
+ * than a list of indices. On real footage roughly a third of cells move each
+ * frame, and a 4-byte index each made the address list larger than the cell data
+ * it pointed at; a bitmap costs 1 bit per cell regardless of how many changed.
  */
 
 const MAGIC = 'GLYPHCST';
-const VERSION = 1;
+const VERSION = 2;
 export const FLAG_COLOR = 1;
 
 export interface GlyphGridFrame {
@@ -215,8 +218,12 @@ export class GlyphWriter {
 
   private encodeDelta(prev: GlyphGridFrame, cur: GlyphGridFrame): Uint8Array {
     const color = this.meta.color;
+    const n = this.cells;
+    const mapBytes = (n + 7) >> 3;
+    const bitmap = new Uint8Array(mapBytes);
     const changed: number[] = [];
-    for (let i = 0; i < this.cells; i++) {
+
+    for (let i = 0; i < n; i++) {
       let diff = prev.glyphs[i] !== cur.glyphs[i];
       if (!diff && color) {
         const c = i * 3;
@@ -228,15 +235,16 @@ export class GlyphWriter {
           prev.bg![c + 1] !== cur.bg![c + 1] ||
           prev.bg![c + 2] !== cur.bg![c + 2];
       }
-      if (diff) changed.push(i);
+      if (diff) {
+        bitmap[i >> 3] |= 1 << (i & 7);
+        changed.push(i);
+      }
     }
 
     const k = changed.length;
-    const out = new Uint8Array(4 + k * 4 + k + (color ? k * 6 : 0));
-    const dv = new DataView(out.buffer);
-    dv.setUint32(0, k, true);
-    let o = 4;
-    for (let j = 0; j < k; j++, o += 4) dv.setUint32(o, changed[j], true);
+    const out = new Uint8Array(mapBytes + k + (color ? k * 6 : 0));
+    out.set(bitmap, 0);
+    let o = mapBytes;
     for (let j = 0; j < k; j++) out[o + j] = cur.glyphs[changed[j]];
     o += k;
     if (color) {
@@ -328,11 +336,14 @@ export class GlyphReader {
         state.bg!.set(payload.subarray(n + n * 3, n + n * 6));
       }
     } else {
-      const pdv = new DataView(payload.buffer, payload.byteOffset);
-      const k = pdv.getUint32(0, true);
-      let p = 4;
-      const idx = new Uint32Array(k);
-      for (let j = 0; j < k; j++, p += 4) idx[j] = pdv.getUint32(p, true);
+      // Walk the changed-cell bitmap; payload planes are in the same bit order.
+      const mapBytes = (n + 7) >> 3;
+      const idx: number[] = [];
+      for (let i = 0; i < n; i++) {
+        if (payload[i >> 3] & (1 << (i & 7))) idx.push(i);
+      }
+      const k = idx.length;
+      let p = mapBytes;
       for (let j = 0; j < k; j++) state.glyphs[idx[j]] = payload[p + j];
       p += k;
       if (color) {

@@ -28,6 +28,21 @@ export interface CompileOptions {
   sink?: GlyphSink;
 }
 
+export interface SourceInfo {
+  width: number;
+  height: number;
+  fps: number;
+  frames: number;
+  seconds: number;
+  codec: string;
+  /**
+   * Largest column count that still gains detail. Below roughly 2 source pixels
+   * per cell the grid is sampling the same pixels repeatedly — the file grows
+   * quadratically while the picture cannot improve.
+   */
+  maxUsefulCols: number;
+}
+
 export interface CompileResult {
   /** Null when streaming to a file sink — the bytes went straight to disk. */
   blob: Blob | null;
@@ -59,6 +74,39 @@ export class Compiler {
 
   cancel() {
     this.cancelled = true;
+  }
+
+  /**
+   * Reads the source's real dimensions, frame rate and length without decoding
+   * anything — demuxing alone is enough, and it is fast.
+   */
+  async inspect(file: File): Promise<SourceInfo> {
+    const chunks: EncodedVideoChunk[] = [];
+    let cfg: VideoConfig | null = null;
+    let err: string | null = null;
+    await demuxFile(
+      file,
+      (c) => {
+        cfg = c;
+      },
+      (c) => chunks.push(c),
+      (e) => {
+        err = e;
+      },
+    );
+    if (err) throw new Error(err);
+    if (!cfg) throw new Error('No video track found.');
+    const config: VideoConfig = cfg;
+    const fps = estimateFps(chunks);
+    return {
+      width: config.codedWidth,
+      height: config.codedHeight,
+      fps,
+      frames: chunks.length,
+      seconds: chunks.length / fps,
+      codec: config.codec,
+      maxUsefulCols: Math.max(40, Math.floor(config.codedWidth / 2)),
+    };
   }
 
   async compile(
@@ -169,13 +217,15 @@ export class Compiler {
       const frame = await nextFrame();
       if (!frame) break;
 
-      // Every frame is still rendered even when striding, so temporal hysteresis
-      // sees an unbroken sequence and glyph choices stay stable.
-      this.renderer.renderOffscreen(frame, frame.displayWidth, frame.displayHeight);
-      frame.close();
+      // Every frame is analysed even when striding, so temporal hysteresis sees an
+      // unbroken sequence and glyph choices stay stable. Frames that will not be
+      // encoded skip the pixel pass entirely — the grid is all we need from them.
       const index = seen++;
+      const keep = index % stride === 0;
+      this.renderer.analyzeOnly(frame, frame.displayWidth, frame.displayHeight);
+      frame.close();
 
-      if (index % stride !== 0) continue;
+      if (!keep) continue;
 
       const grid = await this.renderer.readGlyphGrid();
       packInto(state, grid, cells, opts.color, shift);

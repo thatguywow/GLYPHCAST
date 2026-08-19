@@ -101,6 +101,12 @@ async function run() {
   const ratio = rawBytes / out.bytes;
   check('compresses vs raw grid', ratio > 2, `${ratio.toFixed(1)}x smaller than raw`);
 
+  // Same clip in mono, to separate glyph cost from colour cost.
+  const monoOut = await compiler.compile(file, { color: false, keyInterval: 30 });
+  const monoPerFrame = monoOut.bytes / monoOut.frames / 1024;
+  check('mono is far smaller than colour', monoOut.bytes < out.bytes / 3,
+    `mono ${(monoOut.bytes / 1024).toFixed(0)} KB vs colour ${(out.bytes / 1024).toFixed(0)} KB`);
+
   const perFrameKB = out.bytes / out.frames / 1024;
   const mbps = (out.bytes / out.frames) * out.fps * 8 / 1e6;
 
@@ -113,6 +119,9 @@ async function run() {
     sizeKB: +(out.bytes / 1024).toFixed(1),
     perFrameKB: +perFrameKB.toFixed(2),
     streamMbps: +mbps.toFixed(2),
+    monoKB: +(monoOut.bytes / 1024).toFixed(1),
+    monoPerFrameKB: +monoPerFrame.toFixed(2),
+    monoMbps: +((monoOut.bytes / monoOut.frames) * monoOut.fps * 8 / 1e6).toFixed(2),
     compileSeconds: +(compileMs / 1000).toFixed(2),
     framesPerSecond: +(out.frames / (compileMs / 1000)).toFixed(1),
     results,

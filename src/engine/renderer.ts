@@ -211,7 +211,13 @@ export class Renderer {
     this.device.queue.copyExternalImageToTexture({ source: source as any }, { texture: this.videoTex! }, [w, h]);
   }
 
-  private encode(targetView: GPUTextureView) {
+  /**
+   * Records the passes. Omitting `targetView` runs the analysis pass only: the
+   * character grid and the hysteresis chain still advance, but the full-resolution
+   * pixel pass is skipped. That pass rasterises the entire output (over two
+   * megapixels at 1080p) and is pure waste for a frame nobody will look at.
+   */
+  private encode(targetView?: GPUTextureView) {
     const enc = this.device.createCommandEncoder();
     const i = this.pp;
 
@@ -221,18 +227,35 @@ export class Renderer {
     cp.dispatchWorkgroups(Math.ceil(this.gridW / 8), Math.ceil(this.gridH / 8), 1);
     cp.end();
 
-    const rp = enc.beginRenderPass({
-      colorAttachments: [
-        { view: targetView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' },
-      ],
-    });
-    rp.setPipeline(this.renderPipeline);
-    rp.setBindGroup(0, this.renderBG[i]!);
-    rp.draw(3);
-    rp.end();
+    if (targetView) {
+      const rp = enc.beginRenderPass({
+        colorAttachments: [
+          { view: targetView, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' },
+        ],
+      });
+      rp.setPipeline(this.renderPipeline);
+      rp.setBindGroup(0, this.renderBG[i]!);
+      rp.draw(3);
+      rp.end();
+    }
 
     this.device.queue.submit([enc.finish()]);
     this.pp = 1 - i;
+  }
+
+  /**
+   * Computes the character grid without rasterising pixels. Used by the compiler
+   * for frames it will not encode, so temporal hysteresis still sees an unbroken
+   * sequence at a fraction of the cost.
+   */
+  analyzeOnly(
+    source?: VideoFrame | HTMLCanvasElement | OffscreenCanvas | ImageBitmap,
+    srcW = 0,
+    srcH = 0,
+  ) {
+    if (source) this.uploadSource(source, srcW, srcH);
+    if (!this.ready()) return;
+    this.encode();
   }
 
   render(

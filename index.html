@@ -133,6 +133,8 @@
         <div class="hint">Procedural test scene — proves the GPU engine works.</div>
       </div>
 
+      <div class="hint" id="sourceInfo" style="margin-bottom: 14px"></div>
+
       <div class="group">
         <label>Columns <span class="val" id="colsVal">320</span></label>
         <input id="cols" type="range" min="80" max="480" step="20" value="320" />
@@ -209,6 +211,7 @@
         </label>
         <input id="colorBits" type="range" min="3" max="8" step="1" value="5" />
 
+        <div class="hint" id="estimate" style="color: var(--accent)"></div>
         <div class="hint" id="compileInfo">
           Walks every frame and writes a self-contained file that replays with no server.
           File size scales with cols squared — 480 cols is ~16x the data of 120.

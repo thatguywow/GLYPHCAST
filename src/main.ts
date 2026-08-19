@@ -85,6 +85,30 @@ async function main() {
     playBtn.textContent = 'Play';
     playBtn.disabled = true;
     await player.load(file);
+    void describeSource(file);
+  }
+
+  /**
+   * Reports what the source actually is, and warns when the grid is sampling
+   * finer than the source can support — past that point the file grows with the
+   * square of the column count while the picture cannot get any better.
+   */
+  async function describeSource(file: File) {
+    try {
+      const info = await compiler.inspect(file);
+      sourceInfo = info;
+      const over = params.cols > info.maxUsefulCols;
+      srcEl.innerHTML =
+        `source: ${info.width}x${info.height} · ${info.fps.toFixed(1)}fps · ` +
+        `${info.frames} frames · ${info.seconds.toFixed(1)}s` +
+        (over
+          ? `<br><span style="color:#ffb86b">${params.cols} cols exceeds the ` +
+            `${info.maxUsefulCols} this source supports — costs size, adds no detail.</span>`
+          : '');
+      updateEstimate();
+    } catch {
+      srcEl.textContent = '';
+    }
   }
 
   // --- demo ---------------------------------------------------------------
@@ -137,6 +161,8 @@ async function main() {
     params.cols = +cols.value;
     $('colsVal').textContent = cols.value;
     applyParams();
+    updateEstimate();
+    if (loadedFile && sourceInfo) void describeSource(loadedFile);
   };
 
   const cell = $('cell') as HTMLInputElement;
@@ -216,15 +242,35 @@ async function main() {
   };
 
   // --- compile to .glyph ---------------------------------------------------
+  const compileColor = $('compileColor') as HTMLInputElement;
+  const srcEl = $('sourceInfo');
+  let sourceInfo: Awaited<ReturnType<Compiler['inspect']>> | null = null;
+
+  /** Rough projected file size, so a bad configuration is obvious before it runs. */
+  function updateEstimate() {
+    if (!sourceInfo) return;
+    const stride = +(($('stride') as HTMLSelectElement).value);
+    const rows = Math.round(params.cols * (sourceInfo.height / sourceInfo.width));
+    const cells = params.cols * rows;
+    const frames = Math.ceil(sourceInfo.frames / stride);
+    // ~0.55 B/cell/frame measured for colour, ~0.12 for mono, after compression.
+    const perCell = compileColor.checked ? 0.55 : 0.12;
+    const mb = (cells * frames * perCell) / 1048576;
+    $('estimate').textContent =
+      `~${mb < 1024 ? mb.toFixed(0) + ' MB' : (mb / 1024).toFixed(1) + ' GB'} ` +
+      `· ${params.cols}x${rows} · ${frames} frames @ ${(sourceInfo.fps / stride).toFixed(0)}fps`;
+  }
+
   const compileBtn = $('compile') as HTMLButtonElement;
   const compileInfo = $('compileInfo');
-  const compileColor = $('compileColor') as HTMLInputElement;
   const compiler = new Compiler(renderer, atlas.chars);
 
   const colorBits = $('colorBits') as HTMLInputElement;
   colorBits.oninput = () => {
     $('colorBitsVal').textContent = colorBits.value;
   };
+  ($('stride') as HTMLSelectElement).addEventListener('change', updateEstimate);
+  compileColor.addEventListener('change', updateEstimate);
   let compiling = false;
 
   compileBtn.onclick = async () => {
