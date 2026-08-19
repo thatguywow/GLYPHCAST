@@ -107,6 +107,18 @@ async function run() {
   check('mono is far smaller than colour', monoOut.bytes < out.bytes / 3,
     `mono ${(monoOut.bytes / 1024).toFixed(0)} KB vs colour ${(out.bytes / 1024).toFixed(0)} KB`);
 
+  // Does storing colour at reduced precision still shrink the file now that an
+  // adaptive coder is in front of it? If the model already codes the unused low
+  // bits for nearly nothing, explicit bit-packing would add complexity for
+  // nothing — worth measuring rather than assuming.
+  const sweep: Record<string, number> = {};
+  for (const bits of [8, 6, 5, 4, 3]) {
+    const r = await compiler.compile(file, { color: true, colorBits: bits, keyInterval: 30 });
+    sweep['bits' + bits] = +(r.bytes / 1024).toFixed(1);
+  }
+  check('lower colour precision still shrinks the file', sweep.bits4 < sweep.bits8,
+    Object.entries(sweep).map(([k, v]) => `${k}=${v}KB`).join(' '));
+
   const perFrameKB = out.bytes / out.frames / 1024;
   const mbps = (out.bytes / out.frames) * out.fps * 8 / 1e6;
 
@@ -119,6 +131,7 @@ async function run() {
     sizeKB: +(out.bytes / 1024).toFixed(1),
     perFrameKB: +perFrameKB.toFixed(2),
     streamMbps: +mbps.toFixed(2),
+    colorBitsSweep: sweep,
     monoKB: +(monoOut.bytes / 1024).toFixed(1),
     monoPerFrameKB: +monoPerFrame.toFixed(2),
     monoMbps: +((monoOut.bytes / monoOut.frames) * monoOut.fps * 8 / 1e6).toFixed(2),
