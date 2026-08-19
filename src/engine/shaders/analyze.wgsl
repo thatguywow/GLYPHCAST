@@ -125,7 +125,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let p = vec2i(gid.xy);
   var best: u32 = 0u;
 
-  if (u.matchGlyphs == 1u) {
+  // Flat cells carry no shape to match. Normalising their tiny dynamic range just
+  // amplifies noise, so matching picks an arbitrary dense glyph — invisible once
+  // rendered (ink and paper are the same colour there) but meaningless as TEXT.
+  // Below this contrast, select by ink coverage against the cell's own brightness,
+  // which is what a reader expects: dark cell -> sparse glyph, bright -> dense.
+  let flat = (hi - lo) < 0.10;
+
+  if (u.matchGlyphs == 1u && !flat) {
     // Temporal hysteresis: a cell whose content barely changed can still flip to a
     // different glyph when two candidates score nearly equal, which reads as
     // shimmer in motion. Track the previous frame's glyph error in the same loop

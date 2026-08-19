@@ -177,6 +177,44 @@ async function main() {
     applyParams();
   };
 
+  // --- text emission ------------------------------------------------------
+  // The engine's internal representation IS a character grid; these expose it as
+  // real text rather than as rendered pixels.
+  const textInfo = $('textInfo');
+
+  async function grabText(): Promise<string | null> {
+    try {
+      return await renderer.readText();
+    } catch (e) {
+      showError(`Text export: ${(e as Error).message}`);
+      return null;
+    }
+  }
+
+  ($('copyText') as HTMLButtonElement).onclick = async () => {
+    const t = await grabText();
+    if (!t) return;
+    await navigator.clipboard.writeText(t);
+    const [c, r] = renderer.grid;
+    textInfo.textContent = `Copied ${c}x${r} chars (${t.length} bytes) to clipboard.`;
+  };
+
+  ($('saveText') as HTMLButtonElement).onclick = async () => {
+    const t = await grabText();
+    if (!t) return;
+    const url = URL.createObjectURL(new Blob([t], { type: 'text/plain' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'glyphcast-frame.txt';
+    a.click();
+    URL.revokeObjectURL(url);
+    const [c, r] = renderer.grid;
+    textInfo.textContent = `Saved ${c}x${r} character grid.`;
+  };
+
+  // Exposed so the frame's text form can be inspected programmatically.
+  (window as any).glyphcast = { renderer, params, readText: () => renderer.readText() };
+
   const match = $('match') as HTMLInputElement;
   match.onchange = () => {
     params.matchGlyphs = match.checked;

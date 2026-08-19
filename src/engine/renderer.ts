@@ -123,7 +123,9 @@ export class Renderer {
     this.bgTex?.destroy();
     this.glyphTex[0]?.destroy();
     this.glyphTex[1]?.destroy();
-    const cellUsage = GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING;
+    // COPY_SRC so the character grid itself can be read back, not just the pixels.
+    const cellUsage =
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC;
     this.fgTex = dev.createTexture({ label: 'cell-fg', size: [cols, rows, 1], format: 'rgba8unorm', usage: cellUsage });
     this.bgTex = dev.createTexture({ label: 'cell-bg', size: [cols, rows, 1], format: 'rgba8unorm', usage: cellUsage });
     this.glyphTex = [0, 1].map((i) =>
@@ -241,6 +243,67 @@ export class Renderer {
     if (source) this.uploadSource(source, srcW, srcH);
     if (!this.ready()) return;
     this.encode(this.gpu.context.getCurrentTexture().createView());
+  }
+
+  /** Reads one cell texture back to the CPU, undoing the 256-byte row padding. */
+  private async readTexture(
+    tex: GPUTexture,
+    bytesPerTexel: number,
+  ): Promise<ArrayBuffer> {
+    const w = this.gridW;
+    const h = this.gridH;
+    const bytesPerRow = Math.ceil((w * bytesPerTexel) / 256) * 256;
+    const buf = this.device.createBuffer({
+      size: bytesPerRow * h,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const enc = this.device.createCommandEncoder();
+    enc.copyTextureToBuffer({ texture: tex }, { buffer: buf, bytesPerRow, rowsPerImage: h }, [w, h, 1]);
+    this.device.queue.submit([enc.finish()]);
+    await buf.mapAsync(GPUMapMode.READ);
+    const padded = new Uint8Array(buf.getMappedRange());
+    const tight = new Uint8Array(w * h * bytesPerTexel);
+    for (let y = 0; y < h; y++) {
+      tight.set(padded.subarray(y * bytesPerRow, y * bytesPerRow + w * bytesPerTexel), y * w * bytesPerTexel);
+    }
+    buf.unmap();
+    buf.destroy();
+    return tight.buffer;
+  }
+
+  /**
+   * Reads back the character grid: the glyph index chosen for every cell plus its
+   * foreground and background colour. This is the engine's actual text
+   * representation — the thing that gets rasterised — so it is what a compiler
+   * should emit and what a stream should carry, rather than pixels.
+   */
+  async readGlyphGrid(): Promise<{
+    cols: number;
+    rows: number;
+    glyphs: Uint32Array;
+    fg: Uint8Array;
+    bg: Uint8Array;
+  }> {
+    if (!this.ready()) throw new Error('Renderer has no frame to read.');
+    // The last completed frame lives in the texture the ping-pong just moved off.
+    const last = 1 - this.pp;
+    const glyphs = new Uint32Array(await this.readTexture(this.glyphTex[last]!, 4));
+    const fg = new Uint8Array(await this.readTexture(this.fgTex!, 4));
+    const bg = new Uint8Array(await this.readTexture(this.bgTex!, 4));
+    return { cols: this.gridW, rows: this.gridH, glyphs, fg, bg };
+  }
+
+  /** The character grid as plain text: one line per row, newline separated. */
+  async readText(): Promise<string> {
+    const { cols, rows, glyphs } = await this.readGlyphGrid();
+    const chars = this.atlas.chars;
+    const lines: string[] = [];
+    for (let y = 0; y < rows; y++) {
+      let line = '';
+      for (let x = 0; x < cols; x++) line += chars[glyphs[y * cols + x]] ?? ' ';
+      lines.push(line);
+    }
+    return lines.join(String.fromCharCode(10));
   }
 
   /** Runs the full render path into an offscreen target — for headless timing. */

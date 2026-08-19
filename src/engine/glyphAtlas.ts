@@ -8,6 +8,8 @@ export interface GlyphAtlas {
   ramp: Uint32Array;
   glyphCount: number;
   tile: number;
+  /** Index -> character. Turns a rendered grid back into real text. */
+  chars: string[];
 }
 
 /**
@@ -98,5 +100,5 @@ export function buildGlyphAtlas(device: GPUDevice, tile = 32): GlyphAtlas {
   });
   device.queue.copyExternalImageToTexture({ source: cv }, { texture }, [w, h]);
 
-  return { texture, signatures, coverage, ramp, glyphCount: n, tile };
+  return { texture, signatures, coverage, ramp, glyphCount: n, tile, chars: CHARS };
 }
