@@ -1,0 +1,10 @@
+[package]
+name = "glyphcast-format"
+version = "0.1.0"
+edition = "2021"
+description = "Reader and writer for the GLYPHCAST .glyph container"
+license = "MIT"
+
+# No dependencies on purpose. This crate is the portable definition of the
+# format; anything that pulls in a codec or a GPU stack belongs a layer above it.
+[dependencies]
