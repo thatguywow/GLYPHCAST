@@ -245,30 +245,55 @@ export class Renderer {
     this.encode(this.gpu.context.getCurrentTexture().createView());
   }
 
-  /** Reads one cell texture back to the CPU, undoing the 256-byte row padding. */
-  private async readTexture(
-    tex: GPUTexture,
-    bytesPerTexel: number,
-  ): Promise<ArrayBuffer> {
+  /**
+   * Reads the three cell textures back in ONE round trip: all three copies are
+   * recorded into a single buffer (each region 256-byte aligned, as
+   * copyTextureToBuffer requires) and mapped once. Three separate submits plus
+   * three mapAsync waits per frame is fine for a screenshot and ruinous for a
+   * compiler walking thousands of frames.
+   */
+  private async readCells(): Promise<{ glyphs: Uint32Array; fg: Uint8Array; bg: Uint8Array }> {
     const w = this.gridW;
     const h = this.gridH;
-    const bytesPerRow = Math.ceil((w * bytesPerTexel) / 256) * 256;
+    const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
+    const region = Math.ceil((bytesPerRow * h) / 256) * 256;
+
     const buf = this.device.createBuffer({
-      size: bytesPerRow * h,
+      size: region * 3,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
+
+    const last = 1 - this.pp; // ping-pong already advanced past the last frame
+    const sources: GPUTexture[] = [this.glyphTex[last]!, this.fgTex!, this.bgTex!];
     const enc = this.device.createCommandEncoder();
-    enc.copyTextureToBuffer({ texture: tex }, { buffer: buf, bytesPerRow, rowsPerImage: h }, [w, h, 1]);
+    sources.forEach((tex, k) => {
+      enc.copyTextureToBuffer(
+        { texture: tex },
+        { buffer: buf, offset: k * region, bytesPerRow, rowsPerImage: h },
+        [w, h, 1],
+      );
+    });
     this.device.queue.submit([enc.finish()]);
+
     await buf.mapAsync(GPUMapMode.READ);
-    const padded = new Uint8Array(buf.getMappedRange());
-    const tight = new Uint8Array(w * h * bytesPerTexel);
-    for (let y = 0; y < h; y++) {
-      tight.set(padded.subarray(y * bytesPerRow, y * bytesPerRow + w * bytesPerTexel), y * w * bytesPerTexel);
-    }
+    const all = new Uint8Array(buf.getMappedRange());
+
+    // Strip the row padding into tightly packed planes.
+    const unpad = (k: number) => {
+      const out = new Uint8Array(w * h * 4);
+      for (let y = 0; y < h; y++) {
+        const src = k * region + y * bytesPerRow;
+        out.set(all.subarray(src, src + w * 4), y * w * 4);
+      }
+      return out;
+    };
+    const glyphBytes = unpad(0);
+    const fg = unpad(1);
+    const bg = unpad(2);
     buf.unmap();
     buf.destroy();
-    return tight.buffer;
+
+    return { glyphs: new Uint32Array(glyphBytes.buffer), fg, bg };
   }
 
   /**
@@ -285,11 +310,7 @@ export class Renderer {
     bg: Uint8Array;
   }> {
     if (!this.ready()) throw new Error('Renderer has no frame to read.');
-    // The last completed frame lives in the texture the ping-pong just moved off.
-    const last = 1 - this.pp;
-    const glyphs = new Uint32Array(await this.readTexture(this.glyphTex[last]!, 4));
-    const fg = new Uint8Array(await this.readTexture(this.fgTex!, 4));
-    const bg = new Uint8Array(await this.readTexture(this.bgTex!, 4));
+    const { glyphs, fg, bg } = await this.readCells();
     return { cols: this.gridW, rows: this.gridH, glyphs, fg, bg };
   }
 
