@@ -25,10 +25,26 @@
  * than a list of indices. On real footage roughly a third of cells move each
  * frame, and a 4-byte index each made the address list larger than the cell data
  * it pointed at; a bitmap costs 1 bit per cell regardless of how many changed.
+ *
+ * Values are stored as PREDICTION RESIDUALS, not absolutes. Neighbouring cells
+ * have similar colour, a cell's background resembles its foreground, and a cell
+ * changes little between frames — so predicting from those and storing only the
+ * difference leaves numbers clustered tightly around zero, which is what a
+ * general-purpose compressor can actually exploit. Residuals are taken modulo
+ * 256 and zigzag mapped (0, -1, 1, -2, 2 -> 0, 1, 2, 3, 4) so small differences
+ * of either sign become small bytes. Every step is exactly reversible: this
+ * changes only how the same grid is written, never the grid itself.
+ *
+ * Glyph indices are stored raw: predicting them was measured and made files
+ * larger, because a glyph is chosen by shape and neighbouring choices are not
+ * numerically close. Prediction is applied to colour only.
+ *
+ *   key frame   colour <- cell to the left; background <- its own foreground
+ *   delta frame colour <- the same cell in the previous frame
  */
 
 const MAGIC = 'GLYPHCST';
-const VERSION = 2;
+const VERSION = 3;
 export const FLAG_COLOR = 1;
 
 export interface GlyphGridFrame {
@@ -45,6 +61,19 @@ export interface GlyphMeta {
   fps: number;
   color: boolean;
   chars: string[];
+}
+
+/** Signed residual -> byte, small magnitudes of either sign map to small bytes. */
+function zig(cur: number, pred: number): number {
+  const d = (cur - pred) & 0xff;
+  const signed = d > 127 ? d - 256 : d;
+  return ((signed << 1) ^ (signed >> 31)) & 0xff;
+}
+
+/** Inverse of zig(). */
+function unzig(z: number, pred: number): number {
+  const signed = (z >>> 1) ^ -(z & 1);
+  return (pred + signed) & 0xff;
 }
 
 async function deflate(data: Uint8Array): Promise<Uint8Array> {
@@ -208,10 +237,29 @@ export class GlyphWriter {
     const n = this.cells;
     const color = this.meta.color;
     const out = new Uint8Array(n + (color ? n * 6 : 0));
+
+    // Glyph indices are stored raw. Predicting them from a neighbour was measured
+    // and made things WORSE (mono grew 18%): glyphs are chosen by shape, so
+    // adjacent cells jump around the table and the residual carries more entropy
+    // than the index it replaced. Prediction only pays on smooth signals.
     out.set(f.glyphs.subarray(0, n), 0);
+
     if (color) {
-      out.set(f.fg!.subarray(0, n * 3), n);
-      out.set(f.bg!.subarray(0, n * 3), n + n * 3);
+      const fg = f.fg!;
+      const bg = f.bg!;
+      let o = n;
+      for (let c = 0; c < 3; c++) {
+        for (let i = 0; i < n; i++) {
+          out[o++] = zig(fg[i * 3 + c], i > 0 ? fg[(i - 1) * 3 + c] : 0);
+        }
+      }
+      // Within a cell the background is usually a darker version of the
+      // foreground, so predict it from the foreground rather than the neighbour.
+      for (let c = 0; c < 3; c++) {
+        for (let i = 0; i < n; i++) {
+          out[o++] = zig(bg[i * 3 + c], fg[i * 3 + c]);
+        }
+      }
     }
     return out;
   }
@@ -245,21 +293,22 @@ export class GlyphWriter {
     const out = new Uint8Array(mapBytes + k + (color ? k * 6 : 0));
     out.set(bitmap, 0);
     let o = mapBytes;
+
+    // Glyphs raw (see encodeKey); colours predicted from the previous frame.
     for (let j = 0; j < k; j++) out[o + j] = cur.glyphs[changed[j]];
     o += k;
     if (color) {
-      for (let j = 0; j < k; j++) {
-        const c = changed[j] * 3;
-        out[o + j * 3] = cur.fg![c];
-        out[o + j * 3 + 1] = cur.fg![c + 1];
-        out[o + j * 3 + 2] = cur.fg![c + 2];
+      for (let c = 0; c < 3; c++) {
+        for (let j = 0; j < k; j++) {
+          const i = changed[j] * 3 + c;
+          out[o++] = zig(cur.fg![i], prev.fg![i]);
+        }
       }
-      o += k * 3;
-      for (let j = 0; j < k; j++) {
-        const c = changed[j] * 3;
-        out[o + j * 3] = cur.bg![c];
-        out[o + j * 3 + 1] = cur.bg![c + 1];
-        out[o + j * 3 + 2] = cur.bg![c + 2];
+      for (let c = 0; c < 3; c++) {
+        for (let j = 0; j < k; j++) {
+          const i = changed[j] * 3 + c;
+          out[o++] = zig(cur.bg![i], prev.bg![i]);
+        }
       }
     }
     return out;
@@ -332,8 +381,19 @@ export class GlyphReader {
     if (tag === 0) {
       state.glyphs.set(payload.subarray(0, n));
       if (color) {
-        state.fg!.set(payload.subarray(n, n + n * 3));
-        state.bg!.set(payload.subarray(n + n * 3, n + n * 6));
+        const fg = state.fg!;
+        const bg = state.bg!;
+        let o = n;
+        for (let c = 0; c < 3; c++) {
+          for (let i = 0; i < n; i++) {
+            fg[i * 3 + c] = unzig(payload[o++], i > 0 ? fg[(i - 1) * 3 + c] : 0);
+          }
+        }
+        for (let c = 0; c < 3; c++) {
+          for (let i = 0; i < n; i++) {
+            bg[i * 3 + c] = unzig(payload[o++], fg[i * 3 + c]);
+          }
+        }
       }
     } else {
       // Walk the changed-cell bitmap; payload planes are in the same bit order.
@@ -344,21 +404,21 @@ export class GlyphReader {
       }
       const k = idx.length;
       let p = mapBytes;
+      // state still holds the previous frame here, which is the colour predictor.
       for (let j = 0; j < k; j++) state.glyphs[idx[j]] = payload[p + j];
       p += k;
       if (color) {
-        for (let j = 0; j < k; j++) {
-          const c = idx[j] * 3;
-          state.fg![c] = payload[p + j * 3];
-          state.fg![c + 1] = payload[p + j * 3 + 1];
-          state.fg![c + 2] = payload[p + j * 3 + 2];
+        for (let c = 0; c < 3; c++) {
+          for (let j = 0; j < k; j++) {
+            const i = idx[j] * 3 + c;
+            state.fg![i] = unzig(payload[p++], state.fg![i]);
+          }
         }
-        p += k * 3;
-        for (let j = 0; j < k; j++) {
-          const c = idx[j] * 3;
-          state.bg![c] = payload[p + j * 3];
-          state.bg![c + 1] = payload[p + j * 3 + 1];
-          state.bg![c + 2] = payload[p + j * 3 + 2];
+        for (let c = 0; c < 3; c++) {
+          for (let j = 0; j < k; j++) {
+            const i = idx[j] * 3 + c;
+            state.bg![i] = unzig(payload[p++], state.bg![i]);
+          }
         }
       }
     }
