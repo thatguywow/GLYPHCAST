@@ -113,6 +113,9 @@ async function main() {
     infoEl.textContent = `Copied ${t.length} characters.`;
   };
 
+  // Exposed for diagnostics.
+  (window as any).gcplayer = { player, renderer, params };
+
   // Allow loading a file straight from a URL, so a page can ship with content.
   const src = new URLSearchParams(location.search).get('src');
   if (src) {

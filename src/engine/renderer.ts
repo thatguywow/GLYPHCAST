@@ -131,9 +131,14 @@ export class Renderer {
     this.bgTex?.destroy();
     this.glyphTex[0]?.destroy();
     this.glyphTex[1]?.destroy();
-    // COPY_SRC so the character grid itself can be read back, not just the pixels.
+    // COPY_SRC so the character grid can be read back, COPY_DST so a decoded grid
+    // can be written in. Without COPY_DST every writeTexture is rejected by
+    // validation and the cells stay zeroed — which renders as a black screen.
     const cellUsage =
-      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC;
+      GPUTextureUsage.STORAGE_BINDING |
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_SRC |
+      GPUTextureUsage.COPY_DST;
     this.fgTex = dev.createTexture({ label: 'cell-fg', size: [cols, rows, 1], format: 'rgba8unorm', usage: cellUsage });
     this.bgTex = dev.createTexture({ label: 'cell-bg', size: [cols, rows, 1], format: 'rgba8unorm', usage: cellUsage });
     this.glyphTex = [0, 1].map((i) =>
@@ -169,7 +174,10 @@ export class Renderer {
     dv.setFloat32(24, this.params.tint[0], true);
     dv.setFloat32(28, this.params.tint[1], true);
     dv.setFloat32(32, this.params.tint[2], true);
-    dv.setFloat32(36, this.params.colorDetail, true);
+    // Colour detail samples the source frame per pixel. Playing a compiled file
+    // has no source, so it must be off or every glyph gets multiplied toward the
+    // placeholder's black.
+    dv.setFloat32(36, this.gridOverride ? 0 : this.params.colorDetail, true);
     dev.queue.writeBuffer(this.rUniform, 0, buf);
 
     // Two bind-group sets: set i writes glyph texture i and reads texture 1-i.
@@ -305,7 +313,12 @@ export class Renderer {
     const enc = this.device.createCommandEncoder();
     const i = this.pp;
 
-    if (!skipAnalysis) {
+    // With an external grid there is no source video — only a 1x1 placeholder to
+    // keep the bind group valid — so running analysis would overwrite the cells
+    // just uploaded with garbage derived from that placeholder.
+    const skip = skipAnalysis || this.gridOverride !== null;
+
+    if (!skip) {
       const cp = enc.beginComputePass();
       cp.setPipeline(this.computePipeline);
       cp.setBindGroup(0, this.computeBG[i]!);
@@ -329,7 +342,7 @@ export class Renderer {
     // External grids are written into glyphTex[pp] and rendered from the same
     // index, so the ping-pong must stay put; it only advances when the analysis
     // pass produced a new frame to carry forward.
-    if (!skipAnalysis) this.pp = 1 - i;
+    if (!skip) this.pp = 1 - i;
   }
 
   /**
