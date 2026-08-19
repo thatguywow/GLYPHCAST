@@ -34,8 +34,11 @@ export class RangeEncoder {
   private range = 0xffffffff;
   private out: number[] = [];
 
-  private encodeFreq(cumFreq: number, freq: number, totFreq: number) {
-    const r = Math.floor(this.range / totFreq);
+  // PROB_TOTAL is a power of two, so the interval split is a shift rather than a
+  // division. Coding is per BIT, so a division here is eight per byte and shows
+  // up directly as playback cost.
+  private encodeFreq(cumFreq: number, freq: number) {
+    const r = this.range >>> 11;
     this.low = (this.low + r * cumFreq) >>> 0;
     this.range = (r * freq) >>> 0;
     this.normalize();
@@ -60,20 +63,21 @@ export class RangeEncoder {
   encodeBit(model: Uint16Array, index: number, bit: number) {
     const p = model[index];
     if (bit === 0) {
-      this.encodeFreq(0, p, PROB_TOTAL);
+      this.encodeFreq(0, p);
       model[index] = p + ((PROB_TOTAL - p) >> ADAPT_SHIFT);
     } else {
-      this.encodeFreq(p, PROB_TOTAL - p, PROB_TOTAL);
+      this.encodeFreq(p, PROB_TOTAL - p);
       model[index] = p - (p >> ADAPT_SHIFT);
     }
   }
 
   /** Codes one byte through a bit-tree, most significant bit first. */
   encodeByte(model: ByteModel, value: number) {
+    const probs = model.probs;
     let ctx = 1;
     for (let i = 7; i >= 0; i--) {
       const bit = (value >> i) & 1;
-      this.encodeBit(model.probs, ctx, bit);
+      this.encodeBit(probs, ctx, bit);
       ctx = ((ctx << 1) | bit) & 0xff;
       if (ctx === 0) ctx = 1;
     }
@@ -124,16 +128,20 @@ export class RangeDecoder {
 
   decodeBit(model: Uint16Array, index: number): number {
     const p = model[index];
-    const r = Math.floor(this.range / PROB_TOTAL);
-    const value = Math.min(PROB_TOTAL - 1, Math.floor(((this.code - this.low) >>> 0) / r));
+    const r = this.range >>> 11;
+    // floor(diff / r) < p is exactly diff < r * p, so the symbol is chosen by a
+    // multiply and a compare instead of a divide. Identical bitstream, and the
+    // divide was the dominant cost in playback.
+    const bound = r * p;
+    const diff = (this.code - this.low) >>> 0;
 
     let bit: number;
-    if (value < p) {
-      this.range = (r * p) >>> 0;
+    if (diff < bound) {
+      this.range = bound >>> 0;
       model[index] = p + ((PROB_TOTAL - p) >> ADAPT_SHIFT);
       bit = 0;
     } else {
-      this.low = (this.low + r * p) >>> 0;
+      this.low = (this.low + bound) >>> 0;
       this.range = (r * (PROB_TOTAL - p)) >>> 0;
       model[index] = p - (p >> ADAPT_SHIFT);
       bit = 1;
@@ -143,10 +151,11 @@ export class RangeDecoder {
   }
 
   decodeByte(model: ByteModel): number {
+    const probs = model.probs;
     let ctx = 1;
     let value = 0;
     for (let i = 7; i >= 0; i--) {
-      const bit = this.decodeBit(model.probs, ctx);
+      const bit = this.decodeBit(probs, ctx);
       value = (value << 1) | bit;
       ctx = ((ctx << 1) | bit) & 0xff;
       if (ctx === 0) ctx = 1;

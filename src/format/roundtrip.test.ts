@@ -53,6 +53,25 @@ function makeFrames(meta: GlyphMeta, count: number, glyphCount: number): GlyphGr
 async function run() {
   const chars = [' ', '.', ':', '=', '#', '@', '█'];
 
+  // Both entropy coders must reproduce the grid exactly; they differ only in
+  // size and speed, never in what comes back out.
+  for (const entropy of ['deflate', 'range'] as const) {
+    const meta: GlyphMeta = { cols: 32, rows: 10, fps: 30, color: true, chars, entropy };
+    const frames = makeFrames(meta, 8, chars.length);
+    const w = new GlyphWriter(meta);
+    for (const f of frames) await w.addFrame(f, 3);
+    const blob = (await w.finish())!;
+    const r = await GlyphReader.open(await blob.arrayBuffer());
+    check(`${entropy}: flag round-trips`, r.meta.entropy === entropy, String(r.meta.entropy));
+    const state = r.newState();
+    let ok = true;
+    for (let i = 0; i < r.frameCount; i++) {
+      await r.decodeInto(i, state);
+      ok &&= eq(state.glyphs, frames[i].glyphs) && eq(state.fg!, frames[i].fg!) && eq(state.bg!, frames[i].bg!);
+    }
+    check(`${entropy}: every frame reproduces exactly`, ok, `${blob.size} bytes`);
+  }
+
   // --- colour file, spanning key + delta frames ----------------------------
   {
     const meta: GlyphMeta = { cols: 40, rows: 12, fps: 30, color: true, chars };

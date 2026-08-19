@@ -40,10 +40,13 @@ export interface RenderParams {
   hysteresis: number;
   /**
    * ASCII colour detail, 0..1. At 0 each cell is flat: one foreground and one
-   * background colour (classic terminal look). At 1 the glyph's ink and paper are
-   * tinted by the source colour sampled per output pixel, so colour keeps full
-   * resolution while the glyph keeps the shape. Text-ness is preserved either way
-   * — only the colour resolution changes.
+   * background colour. Above 0 the glyph is tinted by the source colour sampled
+   * per output pixel.
+   *
+   * LIVE PREVIEW ONLY. A compiled .glyph stores one foreground and one background
+   * per cell, so this cannot be reproduced from a file — it defaults to 0 so what
+   * the preview shows is what compiling actually produces. A preview that looks
+   * better than the output is worse than no preview.
    */
   colorDetail: number;
   /** Output brightness multiplier applied before gamma. */
@@ -61,7 +64,7 @@ export const DEFAULT_PARAMS: RenderParams = {
   mode: Mode.AsciiColor,
   matchGlyphs: true,
   hysteresis: 0.18,
-  colorDetail: 0.75,
+  colorDetail: 0,
   gain: 1.0,
   gamma: 1.0,
   tint: [0.65, 1.0, 0.72],

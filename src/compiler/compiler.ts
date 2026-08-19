@@ -26,6 +26,11 @@ export interface CompileOptions {
   frameStride?: number;
   /** Embed the source's audio track in the output. Default true. */
   audio?: boolean;
+  /**
+   * Entropy coder. 'deflate' (default) decodes far faster, which on a delta
+   * chain sets the playable frame rate; 'range' trades that for smaller files.
+   */
+  entropy?: 'deflate' | 'range';
   /** Where bytes go. Defaults to memory; pass a FileSink for long compiles. */
   sink?: GlyphSink;
   /**
@@ -174,6 +179,7 @@ export class Compiler {
       color: opts.color,
       chars: this.chars,
       audio: audio?.bytes,
+      entropy: opts.entropy ?? 'deflate',
     };
     const writer = new GlyphWriter(meta, opts.sink);
 

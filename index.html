@@ -175,9 +175,12 @@
       </div>
 
       <div class="group">
-        <label>Color detail (ASCII) <span class="val" id="detailVal">0.75</span></label>
-        <input id="detail" type="range" min="0" max="1" step="0.05" value="0.75" />
-        <div class="hint">0 = flat color per cell (classic). 1 = full-resolution color, glyph keeps the shape.</div>
+        <label>Color detail (ASCII) <span class="val" id="detailVal">0.00</span></label>
+        <input id="detail" type="range" min="0" max="1" step="0.05" value="0" />
+        <div class="hint">
+          Live preview only — not stored in .glyph. Above 0 the preview will look
+          richer than the compiled file.
+        </div>
       </div>
 
       <div class="group">
@@ -197,6 +200,12 @@
         <label style="margin-top: 8px">
           <input type="checkbox" id="compileColor" checked /> include colour
         </label>
+
+        <label style="margin-top: 10px">Entropy coder</label>
+        <select id="entropy">
+          <option value="deflate" selected>deflate (fast playback)</option>
+          <option value="range">range (~10% smaller, much slower)</option>
+        </select>
 
         <label style="margin-top: 10px">Frame rate</label>
         <select id="stride">

@@ -322,6 +322,7 @@ async function main() {
           color: compileColor.checked,
           colorBits: +(($('colorBits') as HTMLInputElement).value),
           frameStride: +(($('stride') as HTMLSelectElement).value),
+          entropy: ($('entropy') as HTMLSelectElement).value as 'deflate' | 'range',
           sink,
         },
         (p) => {
