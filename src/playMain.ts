@@ -61,7 +61,11 @@ async function main() {
       player.play();
       playBtn.textContent = 'Pause';
     } catch (e) {
-      infoEl.textContent = 'Could not open: ' + (e as Error).message;
+      const msg = (e as Error).message;
+      infoEl.textContent =
+        msg.includes('version')
+          ? `${msg} — this file was made by an older build; recompile it.`
+          : `Could not open ${file.name}: ${msg}`;
       dropEl.classList.remove('hidden');
     }
   }

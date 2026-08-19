@@ -119,7 +119,10 @@
 
       <div class="group">
         <button id="pick" class="primary">Open MP4…</button>
-        <input id="file" type="file" accept="video/mp4,video/*" hidden />
+        <!-- Unfiltered on purpose: MIME filters silently hide files the browser
+             can actually decode, and an empty-looking dialog is worse than an
+             error message on an unsupported file. -->
+        <input id="file" type="file" hidden />
         <div class="hint">H.264 MP4 recommended. Decoded 100% locally.</div>
       </div>
 

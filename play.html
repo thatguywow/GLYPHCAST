@@ -110,7 +110,10 @@
     <header>
       <h1>GLYPHCAST</h1>
       <button id="pick" class="primary">Open .glyph…</button>
-      <input id="file" type="file" accept=".glyph" hidden />
+      <!-- No accept filter: a custom extension makes the OS dialog hide every
+           other file, which reads as "nothing is selectable". Wrong picks are
+           rejected by the reader with a clear message instead. -->
+      <input id="file" type="file" hidden />
       <button id="play" disabled>Play</button>
       <input id="seek" type="range" min="0" max="1000" value="0" disabled />
       <span class="muted">cell <span id="cellVal">8</span></span>
