@@ -3,6 +3,7 @@ import { buildGlyphAtlas } from './engine/glyphAtlas';
 import { Renderer } from './engine/renderer';
 import { Player } from './player/player';
 import { DemoSource } from './demo/demoSource';
+import { Compiler } from './compiler/compiler';
 import { DEFAULT_PARAMS, type RenderParams } from './types';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -53,6 +54,7 @@ async function main() {
   player.onReady = () => {
     playBtn.disabled = false;
     restartBtn.disabled = false;
+    (document.getElementById('compile') as HTMLButtonElement).disabled = false;
     errEl.textContent = '';
   };
   player.onStats = (s) => {
@@ -212,8 +214,67 @@ async function main() {
     textInfo.textContent = `Saved ${c}x${r} character grid.`;
   };
 
+  // --- compile to .glyph ---------------------------------------------------
+  const compileBtn = $('compile') as HTMLButtonElement;
+  const compileInfo = $('compileInfo');
+  const compileColor = $('compileColor') as HTMLInputElement;
+  const compiler = new Compiler(renderer, atlas.chars);
+  let compiling = false;
+
+  compileBtn.onclick = async () => {
+    if (compiling) {
+      compiler.cancel();
+      compileInfo.textContent = 'Cancelling…';
+      return;
+    }
+    if (!loadedFile) {
+      showError('Load a video first.');
+      return;
+    }
+
+    // Compiling drives the renderer frame by frame, so playback must stop.
+    stopDemo();
+    player.pause();
+    playBtn.textContent = 'Play';
+
+    compiling = true;
+    compileBtn.textContent = 'Cancel';
+    errEl.textContent = '';
+
+    try {
+      const out = await compiler.compile(
+        loadedFile,
+        { color: compileColor.checked },
+        (p) => {
+          const pct = p.total ? ((p.frame / p.total) * 100).toFixed(0) : '?';
+          compileInfo.textContent = `Compiling… ${p.frame}/${p.total} frames (${pct}%)`;
+        },
+      );
+
+      const url = URL.createObjectURL(out.blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = loadedFile.name.replace(/\.[^.]+$/, '') + '.glyph';
+      a.click();
+      URL.revokeObjectURL(url);
+
+      const kb = out.blob.size / 1024;
+      const perFrame = out.blob.size / out.frames / 1024;
+      compileInfo.textContent =
+        `${out.frames} frames · ${out.cols}x${out.rows} · ${out.fps.toFixed(1)}fps · ` +
+        `${kb > 1024 ? (kb / 1024).toFixed(1) + ' MB' : kb.toFixed(0) + ' KB'} ` +
+        `(${perFrame.toFixed(2)} KB/frame) in ${out.seconds.toFixed(1)}s`;
+    } catch (e) {
+      showError(`Compile: ${(e as Error).message}`);
+      compileInfo.textContent = 'Compile failed.';
+    } finally {
+      compiling = false;
+      compileBtn.textContent = 'Compile to .glyph';
+    }
+  };
+
   // Exposed so the frame's text form can be inspected programmatically.
-  (window as any).glyphcast = { renderer, params, readText: () => renderer.readText() };
+  (window as any).glyphcast = { renderer, params, atlas, readText: () => renderer.readText() };
 
   const match = $('match') as HTMLInputElement;
   match.onchange = () => {

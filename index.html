@@ -190,6 +190,16 @@
       </div>
       <div class="hint" id="textInfo">Emits the actual character grid, not pixels.</div>
 
+      <div class="group" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 16px">
+        <button id="compile" disabled>Compile to .glyph</button>
+        <label style="margin-top: 8px">
+          <input type="checkbox" id="compileColor" checked /> include colour
+        </label>
+        <div class="hint" id="compileInfo">
+          Walks every frame and writes a self-contained file that replays with no server.
+        </div>
+      </div>
+
       <div class="err" id="err"></div>
     </aside>
 
