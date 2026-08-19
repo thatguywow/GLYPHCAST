@@ -54,7 +54,8 @@ async function main() {
       infoEl.textContent =
         `${file.name} — ${m.cols}x${m.rows} · ${m.fps.toFixed(1)}fps · ` +
         `${player.frameCount} frames · ${(player.frameCount / m.fps).toFixed(1)}s · ` +
-        `${m.color ? 'colour' : 'mono'} · ${(file.size / 1048576).toFixed(1)} MB`;
+        `${m.color ? 'colour' : 'mono'} · ${player.hasAudio ? 'audio' : 'silent'} · ` +
+        `${(file.size / 1048576).toFixed(1)} MB`;
       playBtn.disabled = false;
       seek.disabled = false;
       player.play();

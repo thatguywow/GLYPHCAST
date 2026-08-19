@@ -1,4 +1,4 @@
-import { demuxFile } from '../decode/demux';
+import { demuxFile, extractAudio } from '../decode/demux';
 import { Decoder } from '../decode/decoder';
 import type { Renderer } from '../engine/renderer';
 import { GlyphWriter, type GlyphGridFrame, type GlyphMeta, type GlyphSink } from '../format/glyph';
@@ -24,6 +24,8 @@ export interface CompileOptions {
   colorBits?: number;
   /** Keep 1 frame in N. 2 halves the frame rate and roughly halves the file. */
   frameStride?: number;
+  /** Embed the source's audio track in the output. Default true. */
+  audio?: boolean;
   /** Where bytes go. Defaults to memory; pass a FileSink for long compiles. */
   sink?: GlyphSink;
   /**
@@ -50,6 +52,8 @@ export interface SourceInfo {
 }
 
 export interface CompileResult {
+  /** Bytes of embedded audio, 0 when the source had none. */
+  audioBytes: number;
   /** Null when streaming to a file sink — the bytes went straight to disk. */
   blob: Blob | null;
   bytes: number;
@@ -158,7 +162,19 @@ export class Compiler {
     const fps = sourceFps / stride;
     const shift = 8 - Math.max(1, Math.min(8, opts.colorBits ?? 5));
 
-    const meta: GlyphMeta = { cols, rows, fps, color: opts.color, chars: this.chars };
+    // Audio is pulled before the frame walk so it can go in the header, which
+    // keeps the compiled file a single self-contained artifact.
+    const audio =
+      opts.audio === false ? null : await extractAudio(file).catch(() => null);
+
+    const meta: GlyphMeta = {
+      cols,
+      rows,
+      fps,
+      color: opts.color,
+      chars: this.chars,
+      audio: audio?.bytes,
+    };
     const writer = new GlyphWriter(meta, opts.sink);
 
     // Reused scratch so the per-frame path allocates nothing.
@@ -257,6 +273,7 @@ export class Compiler {
     return {
       blob,
       bytes,
+      audioBytes: audio?.bytes.length ?? 0,
       frames: writer.frameCount,
       cols,
       rows,

@@ -19,6 +19,10 @@ export interface StaticStats {
  * intervening frames rather than jumping. When playback falls behind the clock
  * it catches up by decoding without drawing, which keeps timing honest instead
  * of letting the picture drift away from the intended rate.
+ *
+ * When the file carries audio, the audio element is the clock. Audio glitches
+ * far more audibly than dropped frames show, so the picture is scheduled against
+ * sound rather than the other way round; without audio a wall clock is used.
  */
 export class StaticPlayer {
   private reader: GlyphReader | null = null;
@@ -32,6 +36,9 @@ export class StaticPlayer {
   private shown = 0;
   private lastStatAt = 0;
 
+  private audio: HTMLAudioElement | null = null;
+  private audioUrl: string | null = null;
+
   onStats?: (s: StaticStats) => void;
   onEnded?: () => void;
   onError?: (msg: string) => void;
@@ -40,11 +47,35 @@ export class StaticPlayer {
 
   async load(buffer: ArrayBuffer) {
     this.stop();
+    this.releaseAudio();
+
     this.reader = await GlyphReader.open(buffer);
     this.state = this.reader.newState();
     this.index = -1;
+
+    const track = this.reader.meta.audio;
+    if (track && track.length > 0) {
+      // Copy out of the file buffer: the view is a window onto the whole file.
+      this.audioUrl = URL.createObjectURL(new Blob([track.slice() as BufferSource], { type: 'audio/mp4' }));
+      this.audio = new Audio(this.audioUrl);
+      this.audio.preload = 'auto';
+    }
+
     this.renderer.setExternalGrid(this.reader.meta.cols, this.reader.meta.rows);
     await this.seekTo(0);
+  }
+
+  private releaseAudio() {
+    this.audio?.pause();
+    this.audio = null;
+    if (this.audioUrl) {
+      URL.revokeObjectURL(this.audioUrl);
+      this.audioUrl = null;
+    }
+  }
+
+  get hasAudio() {
+    return !!this.audio;
   }
 
   get meta() {
@@ -63,6 +94,9 @@ export class StaticPlayer {
   private async seekTo(target: number): Promise<void> {
     if (!this.reader || !this.state) return;
     const clamped = Math.min(Math.max(0, target), this.reader.frameCount - 1);
+    if (this.audio && this.reader) {
+      this.audio.currentTime = clamped / (this.reader.meta.fps || 30);
+    }
     if (clamped < this.index) {
       // Backwards means replaying the chain from the start.
       this.state = this.reader.newState();
@@ -88,11 +122,20 @@ export class StaticPlayer {
     this.startFrame = this.index < 0 ? 0 : this.index;
     this.lastStatAt = this.startedAt;
     this.shown = 0;
+
+    if (this.audio) {
+      this.audio.currentTime = this.startFrame / (this.reader.meta.fps || 30);
+      void this.audio.play().catch(() => {
+        // Autoplay was refused; the picture still runs on the wall clock.
+        this.audio = null;
+      });
+    }
     void this.loop();
   }
 
   pause() {
     this.running = false;
+    this.audio?.pause();
     cancelAnimationFrame(this.raf);
   }
 
@@ -106,11 +149,19 @@ export class StaticPlayer {
     this.index = -1;
   }
 
+  /** Releases the audio object URL. Call when discarding the player. */
+  dispose() {
+    this.stop();
+    this.releaseAudio();
+  }
+
   private async loop() {
     while (this.running && this.reader && this.state) {
       const fps = this.reader.meta.fps || 30;
-      const elapsed = (performance.now() - this.startedAt) / 1000;
-      const target = this.startFrame + Math.floor(elapsed * fps);
+      // Audio is authoritative when present: the picture follows the sound.
+      const target = this.audio
+        ? Math.floor(this.audio.currentTime * fps)
+        : this.startFrame + Math.floor(((performance.now() - this.startedAt) / 1000) * fps);
 
       if (target >= this.reader.frameCount) {
         this.pause();

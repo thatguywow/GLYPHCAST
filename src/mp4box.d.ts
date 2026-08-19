@@ -6,9 +6,20 @@ declare module 'mp4box' {
     timescale: number;
     video: { width: number; height: number };
   }
+  export interface MP4AudioTrack {
+    id: number;
+    codec: string;
+    timescale: number;
+    audio?: { sample_rate: number; channel_count: number };
+  }
   export interface MP4Info {
     videoTracks: MP4VideoTrack[];
-    audioTracks: unknown[];
+    audioTracks: MP4AudioTrack[];
+  }
+  export interface MP4Segment {
+    id: number;
+    user: unknown;
+    buffer: ArrayBuffer;
   }
   export interface MP4Sample {
     data: Uint8Array;
@@ -22,6 +33,9 @@ declare module 'mp4box' {
     onReady?: (info: MP4Info) => void;
     onError?: (e: string) => void;
     onSamples?: (id: number, user: unknown, samples: MP4Sample[]) => void;
+    onSegment?: (id: number, user: unknown, buffer: ArrayBuffer, sampleNum: number) => void;
+    setSegmentOptions(id: number, user: unknown, opts: { nbSamples?: number }): void;
+    initializeSegmentation(): MP4Segment[];
     appendBuffer(data: ArrayBuffer & { fileStart: number }): number;
     start(): void;
     stop(): void;

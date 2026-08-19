@@ -11,7 +11,9 @@
  *   fps          f32
  *   frameCount   u32
  *   charTableLen u32
+ *   audioLen     u32
  *   charTable    UTF-8 JSON array of the glyph characters
+ *   audio        fragmented MP4 (audio/mp4), or absent when audioLen is 0
  *   frames[]     each: tag u8 (0 = key, 1 = delta), rawLen u32, compLen u32, payload
  *
  * Payloads are stored PLANAR (all glyph indices, then all foreground bytes, then
@@ -48,7 +50,7 @@
 import { RangeEncoder, RangeDecoder, ByteModel } from './rangecoder';
 
 const MAGIC = 'GLYPHCST';
-const VERSION = 4;
+const VERSION = 5;
 export const FLAG_COLOR = 1;
 
 export interface GlyphGridFrame {
@@ -65,6 +67,12 @@ export interface GlyphMeta {
   fps: number;
   color: boolean;
   chars: string[];
+  /**
+   * Optional soundtrack as a fragmented MP4. Carried inside the container so a
+   * compiled file stays a single self-contained artifact — a media format that
+   * needs a second file alongside it to be watchable is not really one file.
+   */
+  audio?: Uint8Array;
 }
 
 /** Signed residual -> byte, small magnitudes of either sign map to small bytes. */
@@ -220,7 +228,8 @@ export class GlyphWriter {
 
   private async writeHeader(): Promise<void> {
     const table = new TextEncoder().encode(JSON.stringify(this.meta.chars));
-    const header = new Uint8Array(28 + table.length);
+    const audio = this.meta.audio ?? new Uint8Array(0);
+    const header = new Uint8Array(32 + table.length + audio.length);
     const dv = new DataView(header.buffer);
     for (let i = 0; i < 8; i++) dv.setUint8(i, MAGIC.charCodeAt(i));
     dv.setUint16(8, VERSION, true);
@@ -230,7 +239,9 @@ export class GlyphWriter {
     dv.setFloat32(16, this.meta.fps, true);
     dv.setUint32(20, 0, true); // frame count patched in finish()
     dv.setUint32(24, table.length, true);
-    header.set(table, 28);
+    dv.setUint32(28, audio.length, true);
+    header.set(table, 32);
+    header.set(audio, 32 + table.length);
     await this.sink.write(header);
     this.bytes += header.length;
     this.headerWritten = true;
@@ -402,18 +413,22 @@ export class GlyphReader {
 
     const flags = dv.getUint16(10, true);
     const tableLen = dv.getUint32(24, true);
+    const audioLen = dv.getUint32(28, true);
+    const audio =
+      audioLen > 0 ? r.data.subarray(32 + tableLen, 32 + tableLen + audioLen) : undefined;
     r.meta = {
       color: (flags & FLAG_COLOR) !== 0,
       cols: dv.getUint16(12, true),
       rows: dv.getUint16(14, true),
       fps: dv.getFloat32(16, true),
-      chars: JSON.parse(new TextDecoder().decode(r.data.subarray(28, 28 + tableLen))),
+      chars: JSON.parse(new TextDecoder().decode(r.data.subarray(32, 32 + tableLen))),
+      audio,
     };
     r.frameCount = dv.getUint32(20, true);
     r.cells = r.meta.cols * r.meta.rows;
 
     // Index frame offsets up front so playback can seek without rescanning.
-    let o = 28 + tableLen;
+    let o = 32 + tableLen + audioLen;
     for (let f = 0; f < r.frameCount; f++) {
       r.offsets.push(o);
       o += 9 + dv.getUint32(o + 5, true);

@@ -53,6 +53,7 @@ async function run() {
   });
 
   check('compiled frames', out.frames === written.length, `${out.frames} frames`);
+  check('embedded the source audio', out.audioBytes > 1000, `${(out.audioBytes / 1024).toFixed(1)} KB`);
 
   // --- playback reproduces every grid exactly ------------------------------
   document.getElementById('out')!.textContent = 'verifying playback…';
@@ -79,6 +80,21 @@ async function run() {
   check('player reads metadata', player.meta!.cols === out.cols && player.meta!.rows === out.rows,
     `${player.meta!.cols}x${player.meta!.rows}`);
   check('player frame count', player.frameCount === out.frames, String(player.frameCount));
+  check('player exposes audio', player.hasAudio);
+
+  // The embedded track must be genuinely decodable, not merely present.
+  const ctx = new AudioContext();
+  let audioOk = false;
+  let audioDetail = '';
+  try {
+    const buf = await ctx.decodeAudioData(player.meta!.audio!.slice().buffer);
+    audioOk = buf.duration > 0.5;
+    audioDetail = `${buf.duration.toFixed(2)}s ${buf.numberOfChannels}ch ${buf.sampleRate}Hz`;
+  } catch (e) {
+    audioDetail = String(e);
+  }
+  await ctx.close();
+  check('embedded audio decodes', audioOk, audioDetail);
 
   const shot = await renderer.readback();
   let lit = 0;

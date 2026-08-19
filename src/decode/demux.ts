@@ -76,3 +76,67 @@ function buildDescription(mp4: ReturnType<typeof MP4Box.createFile>, trackId: nu
   }
   return undefined;
 }
+
+/**
+ * Extracts the source's audio track as a self-contained fragmented MP4.
+ *
+ * mp4box's segmentation is used rather than hand-muxing: it emits a proper
+ * initialisation segment followed by media segments, and concatenating them
+ * yields a file an <audio> element can play directly. Returns null when the
+ * source has no audio, which is not an error — plenty of clips do not.
+ */
+export function extractAudio(file: File): Promise<{ mime: string; bytes: Uint8Array } | null> {
+  return new Promise((resolve) => {
+    const mp4 = MP4Box.createFile();
+    const parts: ArrayBuffer[] = [];
+    let failed = false;
+
+    mp4.onError = () => {
+      failed = true;
+      resolve(null);
+    };
+
+    mp4.onReady = (info) => {
+      const track = info.audioTracks?.[0];
+      if (!track) {
+        resolve(null);
+        return;
+      }
+      try {
+        mp4.setSegmentOptions(track.id, null, { nbSamples: 1_000_000 });
+        for (const seg of mp4.initializeSegmentation()) parts.push(seg.buffer);
+        mp4.start();
+      } catch {
+        failed = true;
+        resolve(null);
+      }
+    };
+
+    mp4.onSegment = (_id, _user, buffer) => {
+      parts.push(buffer);
+    };
+
+    file
+      .arrayBuffer()
+      .then((raw) => {
+        const buf = raw as ArrayBuffer & { fileStart: number };
+        buf.fileStart = 0;
+        mp4.appendBuffer(buf);
+        mp4.flush();
+        if (failed) return;
+        if (parts.length === 0) {
+          resolve(null);
+          return;
+        }
+        const total = parts.reduce((n, p) => n + p.byteLength, 0);
+        const bytes = new Uint8Array(total);
+        let o = 0;
+        for (const p of parts) {
+          bytes.set(new Uint8Array(p), o);
+          o += p.byteLength;
+        }
+        resolve({ mime: 'audio/mp4', bytes });
+      })
+      .catch(() => resolve(null));
+  });
+}
