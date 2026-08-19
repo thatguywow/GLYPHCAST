@@ -17,8 +17,10 @@
  * Payloads are stored PLANAR (all glyph indices, then all foreground bytes, then
  * all background bytes) rather than interleaved per cell, because neighbouring
  * cells correlate far more strongly within a plane than across one, so planar
- * compresses substantially better. Payloads use deflate-raw via the platform
- * CompressionStream, so there is no third-party codec dependency.
+ * codes substantially better. Each plane is entropy coded by an adaptive binary
+ * range coder with its own model, replacing deflate — deflate cannot spend less
+ * than one bit on a symbol, and our residual planes are overwhelmingly zeros,
+ * which is precisely the distribution it handles worst.
  *
  * Key frames carry every cell. Delta frames carry only cells whose glyph OR
  * colour changed, addressed by a CHANGED-CELL BITMAP (one bit per cell) rather
@@ -43,8 +45,10 @@
  *   delta frame colour <- the same cell in the previous frame
  */
 
+import { RangeEncoder, RangeDecoder, ByteModel } from './rangecoder';
+
 const MAGIC = 'GLYPHCST';
-const VERSION = 3;
+const VERSION = 4;
 export const FLAG_COLOR = 1;
 
 export interface GlyphGridFrame {
@@ -76,16 +80,53 @@ function unzig(z: number, pred: number): number {
   return (pred + signed) & 0xff;
 }
 
-async function deflate(data: Uint8Array): Promise<Uint8Array> {
-  const cs = new CompressionStream('deflate-raw');
-  const stream = new Blob([data as BufferSource]).stream().pipeThrough(cs);
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+/**
+ * Adaptive models, one set per plane, each split into contexts selected by the
+ * PREVIOUS value in that plane, and PERSISTED ACROSS FRAMES.
+ *
+ * Both halves were needed. Plain order-0 coding measured level with deflate:
+ * fractional-bit precision was won, LZ77 match finding was lost. Adding contexts
+ * on top of per-frame models made it worse still — five contexts each saw a
+ * fifth of the data and never finished adapting. Carrying the models across the
+ * whole file gives every context enough history to sharpen, which is what an
+ * adaptive coder needs and what a fresh deflate stream per frame can never do.
+ *
+ * The cost is that frames must be decoded in order. Playback already does that:
+ * frames form a delta chain, so seeking backwards replays from the start anyway.
+ */
+const CTX = 5;
+
+function bucket(v: number): number {
+  if (v === 0) return 0;
+  if (v <= 2) return 1;
+  if (v <= 6) return 2;
+  if (v <= 16) return 3;
+  return 4;
 }
 
-async function inflate(data: Uint8Array): Promise<Uint8Array> {
-  const ds = new DecompressionStream('deflate-raw');
-  const stream = new Blob([data as BufferSource]).stream().pipeThrough(ds);
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+class PlaneModel {
+  private models: ByteModel[] = Array.from({ length: CTX }, () => new ByteModel());
+  private prev = 0;
+
+  encode(enc: RangeEncoder, value: number) {
+    enc.encodeByte(this.models[bucket(this.prev)], value);
+    this.prev = value;
+  }
+
+  decode(dec: RangeDecoder): number {
+    const v = dec.decodeByte(this.models[bucket(this.prev)]);
+    this.prev = v;
+    return v;
+  }
+}
+
+function newModels() {
+  return {
+    bitmap: new PlaneModel(),
+    glyph: new PlaneModel(),
+    fg: new PlaneModel(),
+    bg: new PlaneModel(),
+  };
 }
 
 /**
@@ -162,6 +203,7 @@ export class GlyphWriter {
   private sink: GlyphSink;
   private headerWritten = false;
   private bytes = 0;
+  private models = newModels();
 
   constructor(
     private meta: GlyphMeta,
@@ -198,28 +240,40 @@ export class GlyphWriter {
   async addFrame(frame: GlyphGridFrame, keyInterval = 120): Promise<void> {
     if (!this.headerWritten) await this.writeHeader();
 
+    const n = this.cells;
+    const per = 1 + (this.meta.color ? 6 : 0);
     let isKey = !this.prev || this.frames % keyInterval === 0;
-    let payload = isKey ? this.encodeKey(frame) : this.encodeDelta(this.prev!, frame);
+    let changed: number[] | null = null;
 
-    // A delta costs 4 index bytes per changed cell on top of the cell data, so
-    // once enough of the grid has moved a full key frame is simply smaller —
-    // and it also gives playback another resync point for free.
-    if (!isKey && payload.length >= this.keySize()) {
-      isKey = true;
-      payload = this.encodeKey(frame);
+    if (!isKey) {
+      changed = this.changedCells(this.prev!, frame);
+      // Compare the two encodings by their pre-coding size rather than coding
+      // both: once enough of the grid has moved, sending everything is smaller
+      // than a bitmap plus that many cells, and it adds a resync point for free.
+      const deltaRaw = ((n + 7) >> 3) + changed.length * per;
+      if (deltaRaw >= n * per) {
+        isKey = true;
+        changed = null;
+      }
     }
 
-    const comp = await deflate(payload);
+    // Models carry across frames; the range coder itself is per frame so each
+    // frame stays independently addressable in the file.
+    const enc = new RangeEncoder();
+    const m = this.models;
+    if (isKey) this.codeKey(enc, frame, m);
+    else this.codeDelta(enc, this.prev!, frame, changed!, m);
+    const coded = enc.finish();
 
     const head = new Uint8Array(9);
     const dv = new DataView(head.buffer);
     dv.setUint8(0, isKey ? 0 : 1);
-    dv.setUint32(1, payload.length, true);
-    dv.setUint32(5, comp.length, true);
+    dv.setUint32(1, n, true);
+    dv.setUint32(5, coded.length, true);
 
     await this.sink.write(head);
-    await this.sink.write(comp);
-    this.bytes += head.length + comp.length;
+    await this.sink.write(coded);
+    this.bytes += head.length + coded.length;
     this.frames++;
     // Deltas are computed against the previous frame, so keep an owned copy.
     this.prev = {
@@ -229,49 +283,38 @@ export class GlyphWriter {
     };
   }
 
-  private keySize(): number {
-    return this.cells + (this.meta.color ? this.cells * 6 : 0);
-  }
-
-  private encodeKey(f: GlyphGridFrame): Uint8Array {
+  private codeKey(enc: RangeEncoder, f: GlyphGridFrame, m: ReturnType<typeof newModels>) {
     const n = this.cells;
-    const color = this.meta.color;
-    const out = new Uint8Array(n + (color ? n * 6 : 0));
 
-    // Glyph indices are stored raw. Predicting them from a neighbour was measured
+    // Glyph indices are coded raw. Predicting them from a neighbour was measured
     // and made things WORSE (mono grew 18%): glyphs are chosen by shape, so
     // adjacent cells jump around the table and the residual carries more entropy
     // than the index it replaced. Prediction only pays on smooth signals.
-    out.set(f.glyphs.subarray(0, n), 0);
+    for (let i = 0; i < n; i++) m.glyph.encode(enc, f.glyphs[i]);
 
-    if (color) {
+    if (this.meta.color) {
       const fg = f.fg!;
       const bg = f.bg!;
-      let o = n;
       for (let c = 0; c < 3; c++) {
         for (let i = 0; i < n; i++) {
-          out[o++] = zig(fg[i * 3 + c], i > 0 ? fg[(i - 1) * 3 + c] : 0);
+          m.fg.encode(enc, zig(fg[i * 3 + c], i > 0 ? fg[(i - 1) * 3 + c] : 0));
         }
       }
       // Within a cell the background is usually a darker version of the
       // foreground, so predict it from the foreground rather than the neighbour.
       for (let c = 0; c < 3; c++) {
         for (let i = 0; i < n; i++) {
-          out[o++] = zig(bg[i * 3 + c], fg[i * 3 + c]);
+          m.bg.encode(enc, zig(bg[i * 3 + c], fg[i * 3 + c]));
         }
       }
     }
-    return out;
   }
 
-  private encodeDelta(prev: GlyphGridFrame, cur: GlyphGridFrame): Uint8Array {
+  /** Indices of cells whose glyph or colour differs from the previous frame. */
+  private changedCells(prev: GlyphGridFrame, cur: GlyphGridFrame): number[] {
     const color = this.meta.color;
-    const n = this.cells;
-    const mapBytes = (n + 7) >> 3;
-    const bitmap = new Uint8Array(mapBytes);
-    const changed: number[] = [];
-
-    for (let i = 0; i < n; i++) {
+    const out: number[] = [];
+    for (let i = 0; i < this.cells; i++) {
       let diff = prev.glyphs[i] !== cur.glyphs[i];
       if (!diff && color) {
         const c = i * 3;
@@ -283,35 +326,43 @@ export class GlyphWriter {
           prev.bg![c + 1] !== cur.bg![c + 1] ||
           prev.bg![c + 2] !== cur.bg![c + 2];
       }
-      if (diff) {
-        bitmap[i >> 3] |= 1 << (i & 7);
-        changed.push(i);
-      }
-    }
-
-    const k = changed.length;
-    const out = new Uint8Array(mapBytes + k + (color ? k * 6 : 0));
-    out.set(bitmap, 0);
-    let o = mapBytes;
-
-    // Glyphs raw (see encodeKey); colours predicted from the previous frame.
-    for (let j = 0; j < k; j++) out[o + j] = cur.glyphs[changed[j]];
-    o += k;
-    if (color) {
-      for (let c = 0; c < 3; c++) {
-        for (let j = 0; j < k; j++) {
-          const i = changed[j] * 3 + c;
-          out[o++] = zig(cur.fg![i], prev.fg![i]);
-        }
-      }
-      for (let c = 0; c < 3; c++) {
-        for (let j = 0; j < k; j++) {
-          const i = changed[j] * 3 + c;
-          out[o++] = zig(cur.bg![i], prev.bg![i]);
-        }
-      }
+      if (diff) out.push(i);
     }
     return out;
+  }
+
+  private codeDelta(
+    enc: RangeEncoder,
+    prev: GlyphGridFrame,
+    cur: GlyphGridFrame,
+    changed: number[],
+    m: ReturnType<typeof newModels>,
+  ) {
+    const n = this.cells;
+    const mapBytes = (n + 7) >> 3;
+    const bitmap = new Uint8Array(mapBytes);
+    for (const i of changed) bitmap[i >> 3] |= 1 << (i & 7);
+
+    // The bitmap goes first so the decoder can recover the changed count from it.
+    for (let i = 0; i < mapBytes; i++) m.bitmap.encode(enc, bitmap[i]);
+
+    const k = changed.length;
+    for (let j = 0; j < k; j++) m.glyph.encode(enc, cur.glyphs[changed[j]]);
+
+    if (this.meta.color) {
+      for (let c = 0; c < 3; c++) {
+        for (let j = 0; j < k; j++) {
+          const i = changed[j] * 3 + c;
+          m.fg.encode(enc, zig(cur.fg![i], prev.fg![i]));
+        }
+      }
+      for (let c = 0; c < 3; c++) {
+        for (let j = 0; j < k; j++) {
+          const i = changed[j] * 3 + c;
+          m.bg.encode(enc, zig(cur.bg![i], prev.bg![i]));
+        }
+      }
+    }
   }
 
   /** Patches the real frame count into the header and closes the sink. */
@@ -335,6 +386,8 @@ export class GlyphReader {
   private data!: Uint8Array;
   private offsets: number[] = [];
   private cells = 0;
+  private models = newModels();
+  private nextIndex = 0;
 
   static async open(buffer: ArrayBuffer): Promise<GlyphReader> {
     const r = new GlyphReader();
@@ -368,56 +421,77 @@ export class GlyphReader {
     return r;
   }
 
-  /** Decodes frame `i` into `state` (mutated in place and returned). */
+  /**
+   * Decodes frame `i` into `state` (mutated in place and returned).
+   *
+   * Models adapt across the whole file, so frames must be fed in order. Asking
+   * for anything other than the next one rebuilds the model state by replaying
+   * from the beginning — which the delta chain would require regardless.
+   */
   async decodeInto(i: number, state: GlyphGridFrame): Promise<GlyphGridFrame> {
+    if (i !== this.nextIndex) {
+      this.models = newModels();
+      for (let f = 0; f <= i; f++) await this.decodeFrame(f, state);
+      this.nextIndex = i + 1;
+      return state;
+    }
+    await this.decodeFrame(i, state);
+    this.nextIndex = i + 1;
+    return state;
+  }
+
+  private async decodeFrame(i: number, state: GlyphGridFrame): Promise<GlyphGridFrame> {
     const o = this.offsets[i];
     const dv = new DataView(this.data.buffer, this.data.byteOffset);
     const tag = dv.getUint8(o);
-    const compLen = dv.getUint32(o + 5, true);
-    const payload = await inflate(this.data.subarray(o + 9, o + 9 + compLen));
+    const codedLen = dv.getUint32(o + 5, true);
+    const dec = new RangeDecoder(this.data.subarray(o + 9, o + 9 + codedLen));
+    const m = this.models;
     const color = this.meta.color;
     const n = this.cells;
 
     if (tag === 0) {
-      state.glyphs.set(payload.subarray(0, n));
+      for (let c = 0; c < n; c++) state.glyphs[c] = m.glyph.decode(dec);
       if (color) {
         const fg = state.fg!;
         const bg = state.bg!;
-        let o = n;
         for (let c = 0; c < 3; c++) {
-          for (let i = 0; i < n; i++) {
-            fg[i * 3 + c] = unzig(payload[o++], i > 0 ? fg[(i - 1) * 3 + c] : 0);
+          for (let p = 0; p < n; p++) {
+            fg[p * 3 + c] = unzig(m.fg.decode(dec), p > 0 ? fg[(p - 1) * 3 + c] : 0);
           }
         }
         for (let c = 0; c < 3; c++) {
-          for (let i = 0; i < n; i++) {
-            bg[i * 3 + c] = unzig(payload[o++], fg[i * 3 + c]);
+          for (let p = 0; p < n; p++) {
+            bg[p * 3 + c] = unzig(m.bg.decode(dec), fg[p * 3 + c]);
           }
         }
       }
     } else {
-      // Walk the changed-cell bitmap; payload planes are in the same bit order.
+      // Recover which cells changed, then read exactly that many values.
       const mapBytes = (n + 7) >> 3;
+      const bitmap = new Uint8Array(mapBytes);
+      for (let b = 0; b < mapBytes; b++) bitmap[b] = m.bitmap.decode(dec);
+
       const idx: number[] = [];
-      for (let i = 0; i < n; i++) {
-        if (payload[i >> 3] & (1 << (i & 7))) idx.push(i);
+      for (let c = 0; c < n; c++) {
+        if (bitmap[c >> 3] & (1 << (c & 7))) idx.push(c);
       }
       const k = idx.length;
-      let p = mapBytes;
-      // state still holds the previous frame here, which is the colour predictor.
-      for (let j = 0; j < k; j++) state.glyphs[idx[j]] = payload[p + j];
-      p += k;
+
+      for (let j = 0; j < k; j++) state.glyphs[idx[j]] = m.glyph.decode(dec);
+
       if (color) {
+        // state still holds the previous frame here, which is the predictor.
         for (let c = 0; c < 3; c++) {
           for (let j = 0; j < k; j++) {
-            const i = idx[j] * 3 + c;
-            state.fg![i] = unzig(payload[p++], state.fg![i]);
+            const p = idx[j] * 3 + c;
+            state.fg![p] = unzig(m.fg.decode(dec), state.fg![p]);
           }
         }
         for (let c = 0; c < 3; c++) {
           for (let j = 0; j < k; j++) {
-            const i = idx[j] * 3 + c;
-            state.bg![i] = unzig(payload[p++], state.bg![i]);
+            const p = idx[j] * 3 + c;
+            state.bg![p] = unzig(m.bg.decode(dec), state.bg![p]);
           }
         }
       }
