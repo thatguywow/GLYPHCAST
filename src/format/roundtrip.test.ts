@@ -60,7 +60,7 @@ async function run() {
     const w = new GlyphWriter(meta);
     // keyInterval 4 so the file exercises both frame kinds.
     for (const f of frames) await w.addFrame(f, 4);
-    const blob = w.finish();
+    const blob = (await w.finish())!;
     const r = await GlyphReader.open(await blob.arrayBuffer());
 
     check('color: header cols/rows', r.meta.cols === 40 && r.meta.rows === 12, `${r.meta.cols}x${r.meta.rows}`);
@@ -94,7 +94,7 @@ async function run() {
     const frames = makeFrames(meta, 5, chars.length);
     const w = new GlyphWriter(meta);
     for (const f of frames) await w.addFrame(f, 3);
-    const r = await GlyphReader.open(await w.finish().arrayBuffer());
+    const r = await GlyphReader.open(await (await w.finish())!.arrayBuffer());
 
     check('mono: flag off', r.meta.color === false);
     const state = r.newState();
@@ -113,7 +113,7 @@ async function run() {
     const f: GlyphGridFrame = { glyphs: new Uint8Array([0, 1, 2, 3, 4, 5, 6, 0]) };
     const w = new GlyphWriter(meta);
     await w.addFrame(f);
-    const r = await GlyphReader.open(await w.finish().arrayBuffer());
+    const r = await GlyphReader.open(await (await w.finish())!.arrayBuffer());
     const state = r.newState();
     await r.decodeInto(0, state);
     const text = r.toText(state);

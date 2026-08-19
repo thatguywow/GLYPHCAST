@@ -56,10 +56,10 @@ async function run() {
     `${out.cols}x${out.rows}, expected ${expectedRows} rows`,
   );
   check('fps detected', Math.abs(out.fps - 30) < 2, String(out.fps));
-  check('file is non-trivial', out.blob.size > 1000, `${(out.blob.size / 1024).toFixed(1)} KB`);
+  check('file is non-trivial', out.bytes > 1000, `${(out.bytes / 1024).toFixed(1)} KB`);
 
   // --- decode the whole chain ---------------------------------------------
-  const buf = await out.blob.arrayBuffer();
+  const buf = await out.blob!.arrayBuffer();
   const reader = await GlyphReader.open(buf);
 
   check('header round-trips', reader.meta.cols === out.cols && reader.meta.rows === out.rows);
@@ -98,11 +98,11 @@ async function run() {
 
   // --- size ----------------------------------------------------------------
   const rawBytes = out.frames * out.cols * out.rows * 7;
-  const ratio = rawBytes / out.blob.size;
+  const ratio = rawBytes / out.bytes;
   check('compresses vs raw grid', ratio > 2, `${ratio.toFixed(1)}x smaller than raw`);
 
-  const perFrameKB = out.blob.size / out.frames / 1024;
-  const mbps = (out.blob.size / out.frames) * out.fps * 8 / 1e6;
+  const perFrameKB = out.bytes / out.frames / 1024;
+  const mbps = (out.bytes / out.frames) * out.fps * 8 / 1e6;
 
   (window as any).__COMPILE_TEST__ = {
     passed: results.filter((r) => r.pass).length,
@@ -110,7 +110,7 @@ async function run() {
     frames: out.frames,
     grid: `${out.cols}x${out.rows}`,
     fps: out.fps,
-    sizeKB: +(out.blob.size / 1024).toFixed(1),
+    sizeKB: +(out.bytes / 1024).toFixed(1),
     perFrameKB: +perFrameKB.toFixed(2),
     streamMbps: +mbps.toFixed(2),
     compileSeconds: +(compileMs / 1000).toFixed(2),
@@ -118,7 +118,7 @@ async function run() {
     results,
   };
   paint(
-    `${out.blob.size / 1024 | 0} KB, ${perFrameKB.toFixed(2)} KB/frame, ` +
+    `${out.bytes / 1024 | 0} KB, ${perFrameKB.toFixed(2)} KB/frame, ` +
       `${mbps.toFixed(2)} Mbps at ${out.fps}fps, compiled in ${(compileMs / 1000).toFixed(1)}s`,
   );
 }

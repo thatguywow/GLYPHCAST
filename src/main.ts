@@ -4,6 +4,7 @@ import { Renderer } from './engine/renderer';
 import { Player } from './player/player';
 import { DemoSource } from './demo/demoSource';
 import { Compiler } from './compiler/compiler';
+import { FileSink } from './format/glyph';
 import { DEFAULT_PARAMS, type RenderParams } from './types';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -219,6 +220,11 @@ async function main() {
   const compileInfo = $('compileInfo');
   const compileColor = $('compileColor') as HTMLInputElement;
   const compiler = new Compiler(renderer, atlas.chars);
+
+  const colorBits = $('colorBits') as HTMLInputElement;
+  colorBits.oninput = () => {
+    $('colorBitsVal').textContent = colorBits.value;
+  };
   let compiling = false;
 
   compileBtn.onclick = async () => {
@@ -241,25 +247,56 @@ async function main() {
     compileBtn.textContent = 'Cancel';
     errEl.textContent = '';
 
+    const suggestedName = loadedFile.name.replace(/\.[^.]+$/, '') + '.glyph';
+
+    // Stream straight to disk when the browser allows it. A long compile at a
+    // large grid produces gigabytes; holding that in memory to build one Blob at
+    // the end will freeze or kill the tab.
+    let sink: FileSink | undefined;
+    const picker = (window as any).showSaveFilePicker;
+    if (picker) {
+      try {
+        const handle = await picker.call(window, {
+          suggestedName,
+          types: [{ description: 'GLYPHCAST', accept: { 'application/octet-stream': ['.glyph'] } }],
+        });
+        sink = new FileSink(await handle.createWritable());
+      } catch {
+        compiling = false;
+        compileBtn.textContent = 'Compile to .glyph';
+        compileInfo.textContent = 'Save cancelled.';
+        return;
+      }
+    }
+
     try {
       const out = await compiler.compile(
         loadedFile,
-        { color: compileColor.checked },
+        {
+          color: compileColor.checked,
+          colorBits: +(($('colorBits') as HTMLInputElement).value),
+          frameStride: +(($('stride') as HTMLSelectElement).value),
+          sink,
+        },
         (p) => {
           const pct = p.total ? ((p.frame / p.total) * 100).toFixed(0) : '?';
-          compileInfo.textContent = `Compiling… ${p.frame}/${p.total} frames (${pct}%)`;
+          const mb = p.bytes / 1048576;
+          compileInfo.textContent =
+            `Compiling… ${p.frame}/${p.total} (${pct}%) · ${mb.toFixed(1)} MB so far`;
         },
       );
 
-      const url = URL.createObjectURL(out.blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = loadedFile.name.replace(/\.[^.]+$/, '') + '.glyph';
-      a.click();
-      URL.revokeObjectURL(url);
+      if (out.blob) {
+        const url = URL.createObjectURL(out.blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = suggestedName;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
 
-      const kb = out.blob.size / 1024;
-      const perFrame = out.blob.size / out.frames / 1024;
+      const kb = out.bytes / 1024;
+      const perFrame = out.bytes / out.frames / 1024;
       compileInfo.textContent =
         `${out.frames} frames · ${out.cols}x${out.rows} · ${out.fps.toFixed(1)}fps · ` +
         `${kb > 1024 ? (kb / 1024).toFixed(1) + ' MB' : kb.toFixed(0) + ' KB'} ` +

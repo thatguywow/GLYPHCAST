@@ -195,8 +195,23 @@
         <label style="margin-top: 8px">
           <input type="checkbox" id="compileColor" checked /> include colour
         </label>
+
+        <label style="margin-top: 10px">Frame rate</label>
+        <select id="stride">
+          <option value="1">full (every frame)</option>
+          <option value="2" selected>half (1 in 2)</option>
+          <option value="3">third (1 in 3)</option>
+          <option value="4">quarter (1 in 4)</option>
+        </select>
+
+        <label style="margin-top: 10px">
+          Colour precision <span class="val" id="colorBitsVal">5</span> bits
+        </label>
+        <input id="colorBits" type="range" min="3" max="8" step="1" value="5" />
+
         <div class="hint" id="compileInfo">
           Walks every frame and writes a self-contained file that replays with no server.
+          File size scales with cols squared — 480 cols is ~16x the data of 120.
         </div>
       </div>
 

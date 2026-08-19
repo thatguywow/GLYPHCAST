@@ -1,7 +1,7 @@
 import { demuxFile } from '../decode/demux';
 import { Decoder } from '../decode/decoder';
 import type { Renderer } from '../engine/renderer';
-import { GlyphWriter, type GlyphGridFrame, type GlyphMeta } from '../format/glyph';
+import { GlyphWriter, type GlyphGridFrame, type GlyphMeta, type GlyphSink } from '../format/glyph';
 import type { VideoConfig } from '../types';
 
 export interface CompileProgress {
@@ -11,8 +11,27 @@ export interface CompileProgress {
   bytes: number;
 }
 
+export interface CompileOptions {
+  color: boolean;
+  keyInterval?: number;
+  /**
+   * Bits kept per colour channel (default 5 = 32 levels). Quantising does two
+   * jobs: it collapses the entropy deflate has to encode, and it gives the delta
+   * comparison a noise tolerance. Without it, sensor noise nudges nearly every
+   * cell by a value or two each frame, every cell counts as "changed", and delta
+   * coding degenerates into a full frame plus a 4-byte index per cell.
+   */
+  colorBits?: number;
+  /** Keep 1 frame in N. 2 halves the frame rate and roughly halves the file. */
+  frameStride?: number;
+  /** Where bytes go. Defaults to memory; pass a FileSink for long compiles. */
+  sink?: GlyphSink;
+}
+
 export interface CompileResult {
-  blob: Blob;
+  /** Null when streaming to a file sink — the bytes went straight to disk. */
+  blob: Blob | null;
+  bytes: number;
   frames: number;
   cols: number;
   rows: number;
@@ -44,7 +63,7 @@ export class Compiler {
 
   async compile(
     file: File,
-    opts: { color: boolean; keyInterval?: number },
+    opts: CompileOptions,
     onProgress?: (p: CompileProgress) => void,
   ): Promise<CompileResult> {
     this.cancelled = false;
@@ -80,9 +99,13 @@ export class Compiler {
     const [cols, rows] = this.renderer.grid;
     const cells = cols * rows;
 
-    const fps = estimateFps(chunks);
+    const stride = Math.max(1, Math.floor(opts.frameStride ?? 1));
+    const sourceFps = estimateFps(chunks);
+    const fps = sourceFps / stride;
+    const shift = 8 - Math.max(1, Math.min(8, opts.colorBits ?? 5));
+
     const meta: GlyphMeta = { cols, rows, fps, color: opts.color, chars: this.chars };
-    const writer = new GlyphWriter(meta);
+    const writer = new GlyphWriter(meta, opts.sink);
 
     // Reused scratch so the per-frame path allocates nothing.
     const state: GlyphGridFrame = {
@@ -140,21 +163,27 @@ export class Compiler {
 
     // 4. Render -> read grid -> encode, one frame at a time.
     let count = 0;
+    let seen = 0;
     for (;;) {
       if (this.cancelled) break;
       const frame = await nextFrame();
       if (!frame) break;
 
+      // Every frame is still rendered even when striding, so temporal hysteresis
+      // sees an unbroken sequence and glyph choices stay stable.
       this.renderer.renderOffscreen(frame, frame.displayWidth, frame.displayHeight);
       frame.close();
+      const index = seen++;
+
+      if (index % stride !== 0) continue;
 
       const grid = await this.renderer.readGlyphGrid();
-      packInto(state, grid, cells, opts.color);
+      packInto(state, grid, cells, opts.color, shift);
       await writer.addFrame(state, opts.keyInterval ?? 120);
 
       count++;
       if (onProgress && count % 5 === 0) {
-        onProgress({ frame: count, total: chunks.length, bytes: 0 });
+        onProgress({ frame: count, total: Math.ceil(chunks.length / stride), bytes: writer.size });
       }
     }
 
@@ -164,11 +193,13 @@ export class Compiler {
 
     if (decodeError) throw new Error(`Decode failed: ${decodeError}`);
 
-    const blob = writer.finish();
-    onProgress?.({ frame: count, total: chunks.length, bytes: blob.size });
+    const blob = await writer.finish();
+    const bytes = writer.size;
+    onProgress?.({ frame: count, total: count, bytes });
 
     return {
       blob,
+      bytes,
       frames: writer.frameCount,
       cols,
       rows,
@@ -184,19 +215,22 @@ function packInto(
   grid: { glyphs: Uint32Array; fg: Uint8Array; bg: Uint8Array },
   cells: number,
   color: boolean,
+  shift: number,
 ) {
   for (let i = 0; i < cells; i++) state.glyphs[i] = grid.glyphs[i];
   if (!color) return;
-  // Readback is RGBA; the container stores RGB.
+  // Readback is RGBA; the container stores RGB, quantised so that noise-level
+  // differences collapse to identical bytes and the delta pass can skip them.
+  const q = (v: number) => (v >> shift) << shift;
   for (let i = 0; i < cells; i++) {
     const s = i * 4;
     const d = i * 3;
-    state.fg![d] = grid.fg[s];
-    state.fg![d + 1] = grid.fg[s + 1];
-    state.fg![d + 2] = grid.fg[s + 2];
-    state.bg![d] = grid.bg[s];
-    state.bg![d + 1] = grid.bg[s + 1];
-    state.bg![d + 2] = grid.bg[s + 2];
+    state.fg![d] = q(grid.fg[s]);
+    state.fg![d + 1] = q(grid.fg[s + 1]);
+    state.fg![d + 2] = q(grid.fg[s + 2]);
+    state.bg![d] = q(grid.bg[s]);
+    state.bg![d + 1] = q(grid.bg[s + 1]);
+    state.bg![d + 2] = q(grid.bg[s + 2]);
   }
 }
 
